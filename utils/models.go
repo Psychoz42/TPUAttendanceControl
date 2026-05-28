@@ -11,3 +11,12 @@ type ErrorResponse struct {
 	Code       string  `json:"code"`
 	Message    string  `json:"message"`
 }
+
+type LoginRequest struct {
+	email      string	`json:"email"`
+	password   string   `json:"password"`
+}
+
+type LoginResponse struct {
+	
+}
