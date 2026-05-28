@@ -15,8 +15,7 @@ type ErrorResponse struct {
 }
 
 type Student struct {
-	Id       int    `json:"id"`
-	FullName string `json:"full_name"`
+	Login string `json:"login"`
 }
 
 type EventData struct {
