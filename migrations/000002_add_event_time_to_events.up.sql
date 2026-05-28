@@ -1,0 +1,1 @@
+alter table events add event_time time
