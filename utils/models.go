@@ -30,3 +30,4 @@ type EventData struct {
 	EventName  string `json:"event_name"`
 	EventOwner string `json:"event_owner"`
 	EventInfo  string `json:"event_info"`
+}
