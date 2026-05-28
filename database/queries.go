@@ -24,30 +24,52 @@ func CreateEvent(name string, owner string, info string, code string, expiration
 		return fmt.Errorf("event haven't created: %s", err)
 	}
 
-	fmt.Println("Event created: $1, $2, $3, $4, $5")
+	fmt.Printf("Event created: %s, %s, %s, %s, %s, %s", name, owner, info, code, expirationTime, eventTime)
 
 	return err
 }
 
-func DeleteEventById(id int) error {
+func GetEventById(id int) (utils.Event, error) {
 	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
+		return utils.Event{}, fmt.Errorf("database is not connected to the server")
+	}
+
+	query := `
+			SELECT event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students 
+			FROM events
+			WHERE event_id = $1
+			`
+
+	var Event utils.Event
+	err := pool.QueryRow(context.Background(), query, id).Scan(&Event.Id, &Event.Name, &Event.Owner, &Event.Info, &Event.Code, &Event.ExpirationTime, &Event.Time, &Event.UpdateNeed, &Event.NotedStudents)
+
+	if err != nil {
+		return utils.Event{}, fmt.Errorf("%s", err)
+	}
+
+	return Event, err
+}
+
+func DeleteEventById(id int) (utils.Event, error) {
+	if pool == nil {
+		return utils.Event{}, fmt.Errorf("database is not connected to the server")
 	}
 
 	query := `
 			DELETE FROM events
 			WHERE event_id = $1
+			RETURNING event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students
 			`
-
-	_, err := pool.Exec(context.Background(), query, id)
+	var deletedEvent utils.Event
+	err := pool.QueryRow(context.Background(), query, id).Scan(&deletedEvent.Id, &deletedEvent.Name, &deletedEvent.Owner, &deletedEvent.Info, &deletedEvent.Code, &deletedEvent.ExpirationTime, &deletedEvent.Time, &deletedEvent.UpdateNeed, &deletedEvent.NotedStudents)
 
 	if err != nil {
-		return fmt.Errorf("%s", err)
+		return utils.Event{}, fmt.Errorf("%s", err)
 	}
 
 	fmt.Printf("event with id=%d been deleted", id)
 
-	return err
+	return deletedEvent, err
 }
 
 func GetEventCode(id int) (string, error) {
@@ -206,7 +228,7 @@ func GetExpiredEventIds() ([]int, error) {
 	return ids, err
 }
 
-func GetIventDataById(id int) (utils.EventData, error) {
+func GetEventDataById(id int) (utils.EventData, error) {
 	if pool == nil {
 		return utils.EventData{}, fmt.Errorf("database is not connected to the server")
 	}
@@ -224,21 +246,30 @@ func GetIventDataById(id int) (utils.EventData, error) {
 	return eventData, err
 }
 
-// может ли быть два однинаковых набора (event_ownew, event_code) на два разных event_id?
-func GetEventIdByOwnewAndCode(owner string, code string) (utils.EventData, error) {
+func GetEventIdByCode(code string) (int, error) {
 	if pool == nil {
-		return utils.EventData{}, fmt.Errorf("database is not connected to the server")
+		return -1, fmt.Errorf("database is not connected to the server")
 	}
 
 	query := `
-			SELECT event_id FROM events where event_ownew=$1 and event_code=$2
+			SELECT event_id FROM events where event_code=$1
 			`
 
-	var eventData utils.EventData
-	_, err := pool.Exec(context.Background(), query, owner, code)
+	var id int
+	err := pool.QueryRow(context.Background(), query, code).Scan(&id)
 	if err != nil {
-		return utils.EventData{}, fmt.Errorf("%s", err)
+		return -1, fmt.Errorf("%s", err)
 	}
 
-	return eventData, err
+	return id, err
+}
+
+func OnCodeExistCheck(code string) (bool, error) {
+	_, err := GetEventIdByCode(code)
+
+	if err != nil {
+		return false, err
+	}
+
+	return true, err
 }
