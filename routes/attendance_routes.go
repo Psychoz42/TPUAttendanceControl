@@ -5,6 +5,6 @@ import (
 	"backend/handlers"
 )
 
-func SetupAttendanceRoutes(attendance fiber.Router) {
-	attendance.Post("/scan", handlers.Scan)
+func SetupAttendanceRoutes(attendanceGroup fiber.Router) {
+	attendanceGroup.Post("/scan", handlers.Scan)
 }
