@@ -11,8 +11,10 @@ import (
 func main() {
 	fmt.Println("Start main.go")
 
-	database.Connection()
-	database.CheckConnection()
+	err := database.Connection()
+	if err != nil {
+		fmt.Println("failed to connect db")
+	}
 	defer database.GetPool().Close()
 
 	app := fiber.New()
