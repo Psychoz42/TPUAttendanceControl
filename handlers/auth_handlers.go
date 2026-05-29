@@ -12,12 +12,12 @@ func Login(c *fiber.Ctx) error {
 	loginData := new(utils.LoginRequest)
 	err := c.BodyParser(loginData)
 	if err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid data"})
+        return c.JSON(utils.ErrorResponse{Success: false, Code: "INVALID_DATA_FORMAT", Message: "Invalid login data format"})
     }
 
 	userData, err := utils.LoginCheck(loginData)
 	if err != nil {
-        return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+        return c.JSON(utils.ErrorResponse{Success: false, Code: "LOGIN_ERROR", Message: err.Error()})
     }
 	
 	return c.JSON(userData)
