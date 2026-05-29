@@ -15,7 +15,7 @@ func CreateEvent(name string, owner string, info string, code string, expiration
 
 	query := `
 			INSERT INTO events (event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need)
-			VALUES ($1, $2, $3, $4, $5, $6, false)
+			VALUES ($1, $2, $3, $4, $5, $6, true)
 			`
 
 	_, err := pool.Exec(context.Background(), query, name, owner, info, code, expirationTime, eventTime)
@@ -40,14 +40,45 @@ func GetEventById(id int) (utils.Event, error) {
 			WHERE event_id = $1
 			`
 
-	var Event utils.Event
-	err := pool.QueryRow(context.Background(), query, id).Scan(&Event.Id, &Event.Name, &Event.Owner, &Event.Info, &Event.Code, &Event.ExpirationTime, &Event.Time, &Event.UpdateNeed, &Event.NotedStudents)
+	var event utils.Event
+	err := pool.QueryRow(context.Background(), query, id).Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
 
 	if err != nil {
 		return utils.Event{}, fmt.Errorf("%s", err)
 	}
 
-	return Event, err
+	return event, err
+}
+
+func GetEventsByOwner(owner string) ([]utils.Event, error) {
+	if pool == nil {
+		return []utils.Event{}, fmt.Errorf("database is not connected to the server")
+	}
+
+	query := `
+			SELECT event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students 
+			FROM events
+			WHERE event_owner = $1
+			`
+
+	rows, err := pool.Query(context.Background(), query, owner)
+
+	if err != nil {
+		return []utils.Event{}, fmt.Errorf("%s", err)
+	}
+	defer rows.Close()
+
+	var events []utils.Event
+	for rows.Next() {
+		var event utils.Event
+		err = rows.Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan event_id: %s", err)
+		}
+		events = append(events, event)
+	}
+
+	return events, err
 }
 
 func DeleteEventById(id int) (utils.Event, error) {
@@ -262,6 +293,42 @@ func GetEventIdByCode(code string) (int, error) {
 	}
 
 	return id, err
+}
+
+// вернет false даже в случае если такого id нет в бд
+func GetUpdateNeedById(id int) (bool, error) {
+	if pool == nil {
+		return false, fmt.Errorf("database is not connected to the server")
+	}
+
+	query := `
+			SELECT update_need FROM events where event_id=$1
+			`
+
+	var updateNeed bool
+	err := pool.QueryRow(context.Background(), query, id).Scan(&updateNeed)
+	if err != nil {
+		return false, fmt.Errorf("%s", err)
+	}
+
+	return updateNeed, err
+}
+
+func UpdateUpdateNeedById(id int, newState bool) error {
+	if pool == nil {
+		return fmt.Errorf("database is not connected to the server")
+	}
+
+	query := `
+			UPDATE events SET update_need=$2 where event_id=$1
+			`
+
+	_, err := pool.Exec(context.Background(), query, id, newState)
+	if err != nil {
+		return fmt.Errorf("%s", err)
+	}
+
+	return err
 }
 
 func OnCodeExistCheck(code string) (bool, error) {

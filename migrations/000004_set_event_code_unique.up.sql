@@ -1,0 +1,1 @@
+UPDATE events ADD CONSTRAINT events_code_unique UNIQUE (event_code) 
