@@ -18,7 +18,14 @@ func main() {
 	defer database.GetPool().Close()
 
 	ids, _ := database.GetExpiredEventIds()
+	//for id := range ids {
+	//	_, err := database.DeleteEventById(id)
+	//	fmt.Println(err)
+	//}
 	fmt.Println(ids)
+
+	//e, _ := database.GetEventById(5)
+	//fmt.Println(e.ExpirationTime)
 
 	app := fiber.New()
 

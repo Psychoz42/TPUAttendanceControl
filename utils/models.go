@@ -47,3 +47,8 @@ type Event struct {
 	UpdateNeed     bool      `json:"update_need"`
 	NotedStudents  []Student `json:"noted_students"`
 }
+
+type OwnersEventData struct {
+	Id             int       `json:"event_id"`
+	Name           string    `json:"event_name"`
+}
