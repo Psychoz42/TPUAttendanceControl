@@ -9,9 +9,9 @@ type QrScanResponse struct {
 }
 
 type ErrorResponse struct {
-	Success    bool    `json:"success"`
-	Code       string  `json:"code"`
-	Message    string  `json:"message"`
+	Success bool   `json:"success"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type LoginRequest struct {

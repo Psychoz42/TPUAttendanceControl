@@ -1,0 +1,1 @@
+UPDATE events ADD DROP events_code_unique
