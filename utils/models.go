@@ -15,11 +15,15 @@ type ErrorResponse struct {
 }
 
 type LoginRequest struct {
-	email    string `json:"email"`
-	password string `json:"password"`
+	Email      string	`json:"email"`
+	Password   string   `json:"password"`
 }
 
 type LoginResponse struct {
+	Username   string   `json:"username"`
+	FullName   string   `json:"fullName"`
+	Email      string   `json:"email"`
+	Group      string   `json:"group"`
 }
 
 type Student struct {
