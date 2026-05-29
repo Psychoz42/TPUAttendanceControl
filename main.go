@@ -17,6 +17,9 @@ func main() {
 	}
 	defer database.GetPool().Close()
 
+	ids, _ := database.GetExpiredEventIds()
+	fmt.Println(ids)
+
 	app := fiber.New()
 
 	routes.SetupApiRoutes(app)
