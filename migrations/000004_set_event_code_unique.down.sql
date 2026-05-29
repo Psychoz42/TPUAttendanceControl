@@ -1,1 +1,1 @@
-UPDATE events ADD DROP events_code_unique
+ALTER TABLE events DROP CONSTRAINT events_code_unique 
