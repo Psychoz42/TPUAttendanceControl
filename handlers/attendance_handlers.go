@@ -9,7 +9,7 @@ import (
 
 func Scan(c *fiber.Ctx) error {
 	qr := new(struct{
-		qrCode	string	`json:"qrCode"`
+		QrCode	string	`json:"qrCode"`
 	})
 	
 	if err := c.BodyParser(qr); err != nil { return err }
