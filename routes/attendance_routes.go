@@ -12,4 +12,5 @@ func SetupAttendanceRoutes(attendanceGroup fiber.Router) {
 	attendanceGroup.Post("/getOwnerEvents", handlers.GetOwnersEvents)
 	attendanceGroup.Post("/disableEventUpdating", handlers.DisableEventUpdating)
 	attendanceGroup.Post("/deleteEvent", handlers.DeleteEvent)
+	attendanceGroup.Post("/updateCode", handlers.UpdateCode)
 }

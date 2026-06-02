@@ -3,7 +3,7 @@ package handlers
 import (
 	"backend/utils"
 	"time"
-
+	"backend/apisim"
 	"backend/database"
 
 	"backend/code"
@@ -99,8 +99,12 @@ func GetOwnersEvents(c *fiber.Ctx) error {
 
 func DisableEventUpdating(c *fiber.Ctx) error {
 	eventId := new(struct {
-		EventId int `json:"eventId"`
+		EventId int `json:"event_id"`
 	})
+
+	if err := c.BodyParser(eventId); err != nil {
+		return err
+	}
 
 	err := database.UpdateUpdateNeedById(eventId.EventId, false)
 	if err != nil {
@@ -116,8 +120,12 @@ func DisableEventUpdating(c *fiber.Ctx) error {
 
 func DeleteEvent(c *fiber.Ctx) error {
 	eventId := new(struct {
-		EventId int `json:"eventId"`
+		EventId int `json:"event_id"`
 	})
+
+	if err := c.BodyParser(eventId); err != nil {
+		return err
+	}
 
 	_, err := database.DeleteEventById(eventId.EventId)
 	if err != nil {
@@ -128,5 +136,38 @@ func DeleteEvent(c *fiber.Ctx) error {
 		Success bool `json:"success"`
 	})
 	resp.Success = true
+	return c.JSON(resp)
+}
+
+func UpdateCode(c *fiber.Ctx) error {
+	eventCode := new(struct {
+		Code string `json:"code"`
+	})
+
+	if err := c.BodyParser(eventCode); err != nil {
+		return err
+	}
+
+	eventId, _ := database.GetEventIdByCode(eventCode.Code)
+	newCode := code.GenerateNewCode()
+
+	database.UpdateEventCode(eventId, newCode)
+
+	notedStudents, _ := database.GetNotedStudents(eventId)
+	var notedStudentsStrings []string
+
+	for _, student := range notedStudents {
+		fullName, _ := apisim.GetFullNameByUsername(student.Login)
+		notedStudentsStrings = append(notedStudentsStrings, fullName)
+	}
+
+	resp := new(struct{
+		NewCode        string   `json:"new_code"`
+		NotedStudents  []string `json:"noted_students`
+	})
+
+	resp.NewCode = newCode
+	resp.NotedStudents = notedStudentsStrings
+
 	return c.JSON(resp)
 }
