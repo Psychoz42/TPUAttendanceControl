@@ -1,6 +1,7 @@
 import {
   CreateEventRequest,
   CreateEventResponse,
+  EventDetails,
   UpdateCodeResponse,
   OwnerEventsResponse,
   SuccessOnlyResponse,
@@ -37,6 +38,16 @@ export async function updateCode(
 export async function getOwnerEvents(token: string): Promise<OwnerEventsResponse> {
   // Backend requires valid JSON body, so we pass empty object {}
   return requestApi<OwnerEventsResponse>("/attendance/getOwnerEvents", {}, token);
+}
+
+export async function getEvent(eventId: number, token: string): Promise<EventDetails> {
+  return requestApi<EventDetails>(
+    "/attendance/getEvent",
+    {
+      event_id: eventId,
+    },
+    token
+  );
 }
 
 export async function disableEventUpdating(

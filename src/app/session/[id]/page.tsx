@@ -11,8 +11,6 @@ import { AttendanceList } from "@/components/session/AttendanceList";
 import { ExportModal } from "@/components/session/ExportModal";
 import { FinishConfirmModal } from "@/components/session/FinishConfirmModal";
 import { useAttendanceSession } from "@/hooks/useAttendanceSession";
-import { storage } from "@/lib/storage";
-import { deleteEvent } from "@/lib/api/attendance";
 import {
   Maximize,
   Minimize,
@@ -54,6 +52,7 @@ export default function SessionPage({ params }: SessionPageProps) {
     isStopped,
     isStopping,
     isCodeExpired,
+    isSyncing,
     newlyAddedCount,
     stopEvent,
     removeEvent,
@@ -112,19 +111,6 @@ export default function SessionPage({ params }: SessionPageProps) {
     }
   };
 
-  const handleOrphanDelete = async () => {
-    if (!token || isNaN(eventIdNum)) return;
-    try {
-      await deleteEvent(eventIdNum, token);
-      storage.clearActiveSession(eventIdNum);
-      router.push("/dashboard");
-    } catch (err) {
-      console.error("Failed to delete event:", err);
-      storage.clearActiveSession(eventIdNum);
-      router.push("/dashboard");
-    }
-  };
-
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950">
@@ -138,6 +124,14 @@ export default function SessionPage({ params }: SessionPageProps) {
     return null;
   }
 
+  if (!session && isSyncing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950">
+        <div className="w-10 h-10 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   if (!session) {
     return (
       <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
@@ -145,9 +139,9 @@ export default function SessionPage({ params }: SessionPageProps) {
         <div className="flex-1 flex items-center justify-center p-6 text-center">
           <div className="max-w-md p-8 bg-slate-900 border border-slate-800 rounded-3xl shadow-xl">
             <AlertCircle className="w-12 h-12 text-amber-400 mx-auto mb-4" />
-            <h2 className="text-xl font-bold text-white mb-2">QR-код занятия не найден в браузере</h2>
+            <h2 className="text-xl font-bold text-white mb-2">Не удалось открыть занятие</h2>
             <p className="text-sm text-slate-400 mb-6">
-              Это событие (#{resolvedParams.id}) было создано вне этого браузера или код был стёрт при очистке кэша. Согласно правилам безопасности бэкенда ТПУ, сервер не хранит и не отдаёт повторно QR-коды для ранее созданных занятий.
+              Занятие #{resolvedParams.id} не найдено, удалено или принадлежит другому преподавателю. Если пропала связь с сервером, обновите страницу.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <Link
@@ -155,15 +149,8 @@ export default function SessionPage({ params }: SessionPageProps) {
                 className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition-all shadow-lg shadow-emerald-600/30"
               >
                 <ArrowLeft className="w-4 h-4" />
-                <span>Создать новое занятие</span>
+                <span>К списку занятий</span>
               </Link>
-              <button
-                onClick={handleOrphanDelete}
-                className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-red-500/20 hover:text-red-300 text-slate-300 border border-slate-700 text-sm font-medium transition-colors"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Удалить с сервера</span>
-              </button>
             </div>
           </div>
         </div>
@@ -330,11 +317,14 @@ export default function SessionPage({ params }: SessionPageProps) {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Left Column: QR Presentation Box */}
           <div className="lg:col-span-5 flex flex-col items-center space-y-4">
-            <QrDisplay
-              code={session.currentCode}
-              isRotating={isRotating}
-              size={isFullscreen ? 380 : 320}
-            />
+            {/* A closed event has no code, there is nothing to scan */}
+            {session.currentCode && (
+              <QrDisplay
+                code={session.currentCode}
+                isRotating={isRotating}
+                size={isFullscreen ? 380 : 320}
+              />
+            )}
 
             {/* Rotation Countdown Timer (active only when not stopped and not expired) */}
             {!isStopped && !isCodeExpired ? (

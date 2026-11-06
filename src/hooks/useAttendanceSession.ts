@@ -1,13 +1,27 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ActiveSession, ArchivedSession } from "@/types/attendance";
-import { updateCode, disableEventUpdating, deleteEvent } from "@/lib/api/attendance";
+import { ActiveSession } from "@/types/attendance";
+import { EventDetails } from "@/types/api";
+import { updateCode, disableEventUpdating, deleteEvent, getEvent } from "@/lib/api/attendance";
 import { storage } from "@/lib/storage";
 
 const ROTATION_INTERVAL_MS = 10_000; // 10 seconds
 const RETRY_INTERVAL_MS = 3_000; // 3 seconds on error retry
 const TICK_INTERVAL_MS = 100; // 100ms update for smooth UI
+
+function sessionFromServer(details: EventDetails): ActiveSession {
+  return {
+    eventId: details.event_id,
+    eventName: details.event_name,
+    eventTime: details.event_time,
+    currentCode: details.code ?? "",
+    notedStudents: details.noted_students,
+    isStopped: !details.active,
+    createdAt: details.created_at,
+    lastUpdatedAt: new Date().toISOString(),
+  };
+}
 
 interface UseAttendanceSessionProps {
   eventId: number;
@@ -42,6 +56,10 @@ export function useAttendanceSession({
   const [isStopping, setIsStopping] = useState<boolean>(false);
   const [newlyAddedCount, setNewlyAddedCount] = useState<number>(0);
   const [isCodeExpired, setIsCodeExpired] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(!Number.isNaN(eventId));
+
+  const teacherRef = useRef({ teacherName, teacherEmail });
+  teacherRef.current = { teacherName, teacherEmail };
 
   // Stable references for handlers to prevent infinite render loops
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -71,6 +89,88 @@ export function useAttendanceSession({
       prevStudentsCountRef.current = stored.notedStudents?.length || 0;
     }
   }, [eventId]);
+
+  const archive = useCallback((finished: ActiveSession) => {
+    storage.archiveSession({
+      id: `session-${finished.eventId}`,
+      eventId: finished.eventId,
+      eventName: finished.eventName,
+      eventTime: finished.eventTime,
+      teacherName: teacherRef.current.teacherName,
+      teacherEmail: teacherRef.current.teacherEmail,
+      createdAt: finished.createdAt,
+      finishedAt: new Date().toISOString(),
+      students: finished.notedStudents,
+      totalCount: finished.notedStudents.length,
+    });
+  }, []);
+
+  // The server is the source of truth. Returns true if this call discovered the event was closed
+  const applyServerState = useCallback((details: EventDetails): boolean => {
+    const previous = sessionRef.current;
+    const synced = sessionFromServer(details);
+    const justClosed = !!previous && !previous.isStopped && synced.isStopped;
+
+    const diff = synced.notedStudents.length - prevStudentsCountRef.current;
+    if (previous && diff > 0) {
+      setNewlyAddedCount(diff);
+    }
+    prevStudentsCountRef.current = synced.notedStudents.length;
+
+    sessionRef.current = synced;
+    setSession(synced);
+    setIsStopped(synced.isStopped);
+    if (previous || !synced.isStopped) {
+      storage.saveActiveSession(synced);
+    }
+    if (justClosed) {
+      archive(synced);
+    }
+    return justClosed;
+  }, [archive]);
+
+  // Keep what is known locally when the server no longer has the event
+  const markStoppedLocally = useCallback(() => {
+    if (!sessionRef.current) return;
+    const stopped: ActiveSession = {
+      ...sessionRef.current,
+      isStopped: true,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+    if (!sessionRef.current.isStopped) {
+      archive(stopped);
+    }
+    sessionRef.current = stopped;
+    setSession(stopped);
+    setIsStopped(true);
+    storage.saveActiveSession(stopped);
+  }, [archive]);
+
+  // INVALID_QR does not mean the event is over: the response to the previous rotation
+  // may have been lost, or another tab may have rotated the code. Ask the server
+  const recoverFromInvalidCode = useCallback(async (id: number, currentToken: string) => {
+    try {
+      const details = await getEvent(id, currentToken);
+      const justClosed = applyServerState(details);
+      if (details.active) {
+        // The received code may already be expired, replace it right away
+        nextRotationTimeRef.current = Date.now();
+      } else if (justClosed) {
+        setIsCodeExpired(true);
+        setRotationError("Приём отметок был завершён на сервере.");
+      }
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string };
+      if (errorObj?.code === "EVENT_NOT_FOUND") {
+        setIsCodeExpired(true);
+        setRotationError("Занятие удалено с сервера.");
+        markStoppedLocally();
+      } else {
+        setRotationError(err instanceof Error ? err.message : "Ошибка ротации кода");
+        nextRotationTimeRef.current = Date.now() + RETRY_INTERVAL_MS;
+      }
+    }
+  }, [applyServerState, markStoppedLocally]);
 
   // Perform a single rotation call
   const performRotation = useCallback(async () => {
@@ -120,17 +220,7 @@ export function useAttendanceSession({
       const errorMsg = err instanceof Error ? err.message : "Ошибка ротации кода";
 
       if (errorCode === "INVALID_QR") {
-        // Backend invalidated the code or event was stopped on server
-        setIsCodeExpired(true);
-        setIsStopped(true);
-        setRotationError("Код устарел или приём отметок был завершён на сервере.");
-        // Mark as stopped in storage
-        if (sessionRef.current) {
-          const stoppedSession = { ...sessionRef.current, isStopped: true };
-          sessionRef.current = stoppedSession;
-          setSession(stoppedSession);
-          storage.saveActiveSession(stoppedSession);
-        }
+        await recoverFromInvalidCode(currentSession.eventId, currentToken);
       } else if (errorCode === "UNAUTHORIZED") {
         setRotationError("Сессия истекла. Требуется повторный вход.");
         onUnauthorizedRef.current?.();
@@ -143,7 +233,43 @@ export function useAttendanceSession({
       isRotatingRef.current = false;
       setIsRotating(false);
     }
-  }, []); // Stable callback: no dynamic dependencies
+  }, [recoverFromInvalidCode]); // Stable callback: its dependencies never change
+
+  // On open, take the state from the server: the page may have been reloaded after a long pause,
+  // opened in another browser, or the event may have been closed in the meantime
+  useEffect(() => {
+    if (!token || Number.isNaN(eventId)) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const details = await getEvent(eventId, token);
+        if (cancelled) return;
+        if (applyServerState(details)) {
+          setIsCodeExpired(true);
+        }
+        if (details.active) {
+          // The saved code may already be expired, so show a fresh one right away
+          performRotation();
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const errorObj = err as { code?: string };
+        if (errorObj?.code === "EVENT_NOT_FOUND") {
+          markStoppedLocally();
+        } else {
+          console.warn("Could not load event from server:", err);
+        }
+      } finally {
+        if (!cancelled) setIsSyncing(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId, token, applyServerState, markStoppedLocally, performRotation]);
 
   // Main countdown timer loop based on absolute timestamps (drift-free)
   useEffect(() => {
@@ -190,35 +316,17 @@ export function useAttendanceSession({
     try {
       await disableEventUpdating(currentSession.eventId, currentToken);
 
-      const stoppedSession: ActiveSession = {
-        ...currentSession,
-        isStopped: true,
-        lastUpdatedAt: new Date().toISOString(),
-      };
-
-      sessionRef.current = stoppedSession;
-      setSession(stoppedSession);
-      setIsStopped(true);
-      storage.saveActiveSession(stoppedSession);
-
-      // Archive session permanently in local storage
-      const archiveItem: ArchivedSession = {
-        id: `session-${currentSession.eventId}-${Date.now()}`,
-        eventId: currentSession.eventId,
-        eventName: currentSession.eventName,
-        eventTime: currentSession.eventTime,
-        teacherName,
-        teacherEmail,
-        createdAt: currentSession.createdAt,
-        finishedAt: new Date().toISOString(),
-        students: currentSession.notedStudents,
-        totalCount: currentSession.notedStudents.length,
-      };
-      storage.archiveSession(archiveItem);
+      try {
+        // The local list is up to 10 seconds old, students who scanned since then are only on the server
+        applyServerState(await getEvent(currentSession.eventId, currentToken));
+      } catch (err) {
+        console.warn("Could not load the final list from server:", err);
+        markStoppedLocally();
+      }
     } finally {
       setIsStopping(false);
     }
-  }, [teacherName, teacherEmail]);
+  }, [applyServerState, markStoppedLocally]);
 
   // Delete event permanently from server and local storage
   const removeEvent = useCallback(async () => {
@@ -251,6 +359,7 @@ export function useAttendanceSession({
     isStopped,
     isStopping,
     isCodeExpired,
+    isSyncing,
     newlyAddedCount,
     stopEvent,
     removeEvent,

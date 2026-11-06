@@ -25,6 +25,7 @@ import {
 export function ArchiveList() {
   const { token, user } = useAuth();
   const [activeBackendEvents, setActiveBackendEvents] = useState<OwnerEventItem[]>([]);
+  const [serverEventsLoaded, setServerEventsLoaded] = useState(false);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSession[]>([]);
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,6 +43,7 @@ export function ArchiveList() {
       try {
         const events = await getOwnerEvents(token);
         setActiveBackendEvents(events || []);
+        setServerEventsLoaded(true);
       } catch (err) {
         console.warn("Could not fetch owner events from backend:", err);
       }
@@ -100,12 +102,24 @@ export function ArchiveList() {
     });
   };
 
-  // Find server events that don't have matching local QR code sessions
+  // Open events without a local copy: they can be continued in this browser
   const localEventIds = new Set(activeSessions.map((s) => s.eventId));
-  const orphanServerEvents = activeBackendEvents.filter((e) => !localEventIds.has(e.event_id));
+  const orphanServerEvents = activeBackendEvents.filter(
+    (e) => e.active && !localEventIds.has(e.event_id)
+  );
 
-  // Active ongoing sessions (unstopped)
-  const ongoingSessions = activeSessions.filter((s) => !s.isStopped);
+  // Closed events stay on the server, show the ones missing from the local archive
+  const archivedEventIds = new Set(archivedSessions.map((s) => s.eventId));
+  const serverArchivedEvents = activeBackendEvents.filter(
+    (e) => !e.active && !archivedEventIds.has(e.event_id)
+  );
+
+  // Active ongoing sessions (unstopped). The server may have closed an abandoned one
+  const openServerIds = new Set(activeBackendEvents.filter((e) => e.active).map((e) => e.event_id));
+  const ongoingSessions = activeSessions.filter(
+    (s) => !s.isStopped && (!serverEventsLoaded || openServerIds.has(s.eventId))
+  );
+  const archiveCount = archivedSessions.length + serverArchivedEvents.length;
 
   return (
     <div className="space-y-6">
@@ -183,7 +197,7 @@ export function ArchiveList() {
               </div>
             ))}
 
-            {/* Orphan server events created outside this browser */}
+            {/* Open server events created outside this browser */}
             {orphanServerEvents.map((evt) => (
               <div
                 key={evt.event_id}
@@ -196,18 +210,27 @@ export function ArchiveList() {
                       #{evt.event_id} — {evt.event_name}
                     </div>
                     <div className="text-slate-400 text-[11px]">
-                      Код отсутствует в браузере (создано в другом месте)
+                      Открыто в другом браузере, можно продолжить здесь
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDeleteBackendEvent(evt.event_id)}
-                  title="Удалить неактивное занятие с сервера"
-                  className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-slate-700 hover:bg-red-500/20 text-slate-300 hover:text-red-300 font-medium transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Удалить</span>
-                </button>
+                <div className="flex items-center space-x-2 flex-shrink-0">
+                  <Link
+                    href={`/session/${evt.event_id}`}
+                    className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
+                  >
+                    <span>К экрану QR</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </Link>
+                  <button
+                    onClick={() => handleDeleteBackendEvent(evt.event_id)}
+                    title="Удалить занятие с сервера"
+                    className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-slate-700 hover:bg-red-500/20 text-slate-300 hover:text-red-300 font-medium transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Удалить</span>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -232,13 +255,13 @@ export function ArchiveList() {
           </div>
 
           <div className="text-xs font-medium text-slate-400">
-            Записей: <span className="text-white font-bold">{archivedSessions.length}</span>
+            Записей: <span className="text-white font-bold">{archiveCount}</span>
           </div>
         </div>
 
         {isLoading ? (
           <div className="text-center py-8 text-slate-400 text-sm">Загрузка данных...</div>
-        ) : archivedSessions.length === 0 ? (
+        ) : archiveCount === 0 ? (
           <div className="text-center py-8 px-4 border border-dashed border-slate-800 rounded-2xl">
             <p className="text-sm text-slate-300 font-medium">Архив пока пуст</p>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
@@ -316,6 +339,61 @@ export function ArchiveList() {
                 </div>
               );
             })}
+
+            {/* Closed events stored on the server but not in this browser */}
+            {serverArchivedEvents.map((evt) => (
+              <div
+                key={evt.event_id}
+                className="p-4 rounded-2xl bg-slate-800/60 border border-slate-700/60 hover:bg-slate-800 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-base font-bold text-white">{evt.event_name}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-mono bg-slate-700 text-slate-300">
+                      #{evt.event_id}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+                    <span className="inline-flex items-center space-x-1">
+                      <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                      <span>
+                        {new Date(evt.created_at).toLocaleDateString("ru-RU", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center space-x-1">
+                      <Clock className="w-3.5 h-3.5 text-slate-500" />
+                      <span>{evt.event_time}</span>
+                    </span>
+                    <span className="inline-flex items-center space-x-1 text-emerald-400 font-medium">
+                      <Users className="w-3.5 h-3.5" />
+                      <span>Отмечено: {evt.noted_count} чел.</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 self-end md:self-auto">
+                  <Link
+                    href={`/session/${evt.event_id}`}
+                    title="Открыть ведомость"
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition-colors"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Ведомость</span>
+                  </Link>
+                  <button
+                    onClick={() => handleDeleteBackendEvent(evt.event_id)}
+                    title="Удалить занятие с сервера"
+                    className="p-1.5 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

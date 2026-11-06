@@ -1,4 +1,5 @@
 import { ApiErrorResponse } from "@/types/api";
+import { storage } from "@/lib/storage";
 
 export class ApiError extends Error {
   code: string;
@@ -87,6 +88,12 @@ export async function requestApi<T>(
       `Сервер вернул некорректный ответ (HTTP ${res.status})`,
       `HTTP status ${res.status}`
     );
+  }
+
+  // The saved token is no longer valid (it lives 12 hours): the only way forward is to log in again
+  if (res.status === 401 && token && typeof window !== "undefined") {
+    storage.clearAuth();
+    window.location.assign("/login");
   }
 
   // Handle explicit HTTP 4xx/5xx errors

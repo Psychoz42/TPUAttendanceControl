@@ -55,9 +55,23 @@ export interface UpdateCodeResponse {
 export interface OwnerEventItem {
   event_id: number;
   event_name: string;
+  event_time: string;
+  created_at: string;
+  active: boolean;
+  noted_count: number;
 }
 
 export type OwnerEventsResponse = OwnerEventItem[];
+
+export interface EventDetails {
+  event_id: number;
+  event_name: string;
+  event_time: string;
+  created_at: string;
+  active: boolean;
+  code?: string; // Present only while the event is open
+  noted_students: string[];
+}
 
 export interface EventIdRequest {
   event_id: number;
