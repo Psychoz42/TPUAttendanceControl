@@ -23,8 +23,9 @@ import (
 
 const (
 	cleanupInterval = 10 * time.Minute
-	// запас на случай, если клиент преподавателя ненадолго пропал из сети
-	cleanupGrace = 10 * time.Minute
+	// запас на случай, если клиент преподавателя ненадолго пропал из сети:
+	// пока событие не закрыто, updateCode может продолжить его
+	closeGrace = 10 * time.Minute
 )
 
 func getenv(key, def string) string {
@@ -40,11 +41,19 @@ func main() {
 	databaseUrl := getenv("DATABASE_URL", "postgresql://postgres:2367@localhost:5431/postgres")
 	listenAddr := getenv("LISTEN_ADDR", ":80")
 	usersFile := getenv("USERS_FILE", "users.txt")
+	// задавать, только если сервер доступен исключительно через прокси, иначе клиент подделает свой IP
+	proxyHeader := getenv("PROXY_HEADER", "")
 
 	authRequired, err := strconv.ParseBool(getenv("AUTH_REQUIRED", "false"))
 	if err != nil {
 		log.Fatalf("неверное значение AUTH_REQUIRED: %v", err)
 	}
+
+	retentionDays, err := strconv.Atoi(getenv("EVENT_RETENTION_DAYS", "0"))
+	if err != nil || retentionDays < 0 {
+		log.Fatalf("неверное значение EVENT_RETENTION_DAYS: %q", os.Getenv("EVENT_RETENTION_DAYS"))
+	}
+	retention := time.Duration(retentionDays) * 24 * time.Hour
 
 	err = auth.Init(os.Getenv("JWT_SECRET"), authRequired)
 	if err != nil {
@@ -67,9 +76,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go startCleanup(ctx)
+	go startCleanup(ctx, retention)
 
-	app := newApp()
+	app := newApp(proxyHeader)
 
 	go func() {
 		<-ctx.Done()
@@ -86,9 +95,10 @@ func main() {
 	database.GetPool().Close()
 }
 
-func newApp() *fiber.App {
+func newApp(proxyHeader string) *fiber.App {
 	app := fiber.New(fiber.Config{
-		BodyLimit: 64 * 1024,
+		BodyLimit:   64 * 1024,
+		ProxyHeader: proxyHeader,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			var fe *fiber.Error
 			if errors.As(err, &fe) {
@@ -112,13 +122,14 @@ func newApp() *fiber.App {
 	return app
 }
 
-// удаляет просроченные события сразу при старте и дальше раз в cleanupInterval
-func startCleanup(ctx context.Context) {
+// закрывает брошенные события и удаляет устаревшие сразу при старте и дальше раз в cleanupInterval.
+// retention 0 значит хранить события бессрочно
+func startCleanup(ctx context.Context, retention time.Duration) {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
 
 	for {
-		deleteExpiredEvents(ctx)
+		cleanupEvents(ctx, retention)
 
 		select {
 		case <-ctx.Done():
@@ -128,16 +139,27 @@ func startCleanup(ctx context.Context) {
 	}
 }
 
-func deleteExpiredEvents(ctx context.Context) {
+func cleanupEvents(ctx context.Context, retention time.Duration) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	ids, err := database.DeleteExpiredEvents(ctx, cleanupGrace)
+	closed, err := database.CloseAbandonedEvents(ctx, closeGrace)
 	if err != nil {
 		log.Printf("cleanup: %v", err)
+	}
+	if len(closed) > 0 {
+		fmt.Printf("Closed %d abandoned events: %v\n", len(closed), closed)
+	}
+
+	if retention == 0 {
 		return
 	}
-	if len(ids) > 0 {
-		fmt.Printf("Deleted %d expired events: %v\n", len(ids), ids)
+
+	deleted, err := database.DeleteExpiredEvents(ctx, retention)
+	if err != nil {
+		log.Printf("cleanup: %v", err)
+	}
+	if len(deleted) > 0 {
+		fmt.Printf("Deleted %d expired events: %v\n", len(deleted), deleted)
 	}
 }

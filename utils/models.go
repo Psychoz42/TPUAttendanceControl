@@ -47,9 +47,25 @@ type Event struct {
 	ExpirationTime time.Time `json:"expiration_time"`
 	UpdateNeed     bool      `json:"update_need"`
 	NotedStudents  []Student `json:"noted_students"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type OwnersEventData struct {
-	Id   int    `json:"event_id"`
-	Name string `json:"event_name"`
+	Id         int       `json:"event_id"`
+	Name       string    `json:"event_name"`
+	Time       string    `json:"event_time"`
+	CreatedAt  time.Time `json:"created_at"`
+	Active     bool      `json:"active"`
+	NotedCount int       `json:"noted_count"`
+}
+
+// EventDetails отдаётся только владельцу события. Код есть только у открытого события
+type EventDetails struct {
+	Id            int       `json:"event_id"`
+	Name          string    `json:"event_name"`
+	Time          string    `json:"event_time"`
+	CreatedAt     time.Time `json:"created_at"`
+	Active        bool      `json:"active"`
+	Code          string    `json:"code,omitempty"`
+	NotedStudents []string  `json:"noted_students"`
 }

@@ -17,11 +17,11 @@ var ErrNotFound = errors.New("not found")
 // сколько раз перегенерировать код, если он совпал с уже существующим
 const codeGenAttempts = 3
 
-const eventColumns = `event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students`
+const eventColumns = `event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students, created_at`
 
 func scanEvent(row pgx.Row) (utils.Event, error) {
 	var event utils.Event
-	err := row.Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
+	err := row.Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents, &event.CreatedAt)
 	return event, err
 }
 
@@ -58,14 +58,17 @@ func CreateEvent(ctx context.Context, name string, owner string, info string, ev
 	return -1, "", fmt.Errorf("create event: %w", err)
 }
 
-func GetEventById(ctx context.Context, id int) (utils.Event, error) {
+// У GetEventById, DeleteEventById, UpdateUpdateNeedById и RotateEventCode параметр owner ограничивает
+// действие событиями этого владельца. Чужое событие выглядит как ErrNotFound, чтобы нельзя
+// было перебирать id. Пустой owner значит запрос без токена: проверки нет, пока AUTH_REQUIRED выключен
+func GetEventById(ctx context.Context, id int, owner string) (utils.Event, error) {
 	query := `
 			SELECT ` + eventColumns + `
 			FROM events
-			WHERE event_id = $1
+			WHERE event_id = $1 AND ($2::text = '' OR event_owner = $2)
 			`
 
-	event, err := scanEvent(pool.QueryRow(ctx, query, id))
+	event, err := scanEvent(pool.QueryRow(ctx, query, id, owner))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return utils.Event{}, ErrNotFound
 	}
@@ -105,6 +108,7 @@ func GetEventsByOwner(ctx context.Context, owner string) ([]utils.Event, error) 
 			SELECT ` + eventColumns + `
 			FROM events
 			WHERE event_owner = $1
+			ORDER BY created_at DESC, event_id DESC
 			`
 
 	rows, err := pool.Query(ctx, query, owner)
@@ -128,9 +132,6 @@ func GetEventsByOwner(ctx context.Context, owner string) ([]utils.Event, error) 
 	return events, nil
 }
 
-// У DeleteEventById, UpdateUpdateNeedById и RotateEventCode параметр owner ограничивает
-// действие событиями этого владельца. Чужое событие выглядит как ErrNotFound, чтобы нельзя
-// было перебирать id. Пустой owner значит запрос без токена: проверки нет, пока AUTH_REQUIRED выключен
 func DeleteEventById(ctx context.Context, id int, owner string) (utils.Event, error) {
 	query := `
 			DELETE FROM events
@@ -151,17 +152,44 @@ func DeleteEventById(ctx context.Context, id int, owner string) (utils.Event, er
 	return deletedEvent, nil
 }
 
-// DeleteExpiredEvents удаляет события, код которых истёк больше чем grace назад
-func DeleteExpiredEvents(ctx context.Context, grace time.Duration) ([]int, error) {
+// CloseAbandonedEvents закрывает события, код которых истёк больше чем grace назад:
+// сайт перестал обновлять код. Список отметившихся остаётся в таблице
+func CloseAbandonedEvents(ctx context.Context, grace time.Duration) ([]int, error) {
+	query := `
+			UPDATE events
+			SET update_need = false
+			WHERE update_need AND expiration_time < now() - $1::interval
+			RETURNING event_id
+			`
+
+	ids, err := queryEventIds(ctx, query, grace)
+	if err != nil {
+		return nil, fmt.Errorf("close abandoned events: %w", err)
+	}
+
+	return ids, nil
+}
+
+// DeleteExpiredEvents удаляет события, код которых истёк больше чем retention назад
+func DeleteExpiredEvents(ctx context.Context, retention time.Duration) ([]int, error) {
 	query := `
 			DELETE FROM events
 			WHERE expiration_time < now() - $1::interval
 			RETURNING event_id
 			`
 
-	rows, err := pool.Query(ctx, query, grace)
+	ids, err := queryEventIds(ctx, query, retention)
 	if err != nil {
 		return nil, fmt.Errorf("delete expired events: %w", err)
+	}
+
+	return ids, nil
+}
+
+func queryEventIds(ctx context.Context, query string, args ...any) ([]int, error) {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -169,12 +197,12 @@ func DeleteExpiredEvents(ctx context.Context, grace time.Duration) ([]int, error
 	for rows.Next() {
 		var id int
 		if err = rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan event_id: %w", err)
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("delete expired events: %w", err)
+		return nil, err
 	}
 
 	return ids, nil

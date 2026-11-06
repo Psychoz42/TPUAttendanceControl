@@ -71,7 +71,7 @@ func setupTestAppWithAuth(t *testing.T, authRequired bool) *fiber.App {
 		database.GetPool().Exec(context.Background(), "DELETE FROM events WHERE event_owner = ANY($1)", []string{testOwner, testOtherOwner})
 	})
 
-	return newApp()
+	return newApp("")
 }
 
 func setupTestApp(t *testing.T) *fiber.App {
@@ -150,7 +150,7 @@ func createTestEvent(t *testing.T, app *fiber.App) (int, string) {
 func notedCount(t *testing.T, eventId int) int {
 	t.Helper()
 
-	event, err := database.GetEventById(context.Background(), eventId)
+	event, err := database.GetEventById(context.Background(), eventId, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,6 +388,134 @@ func TestGetOwnerEvents(t *testing.T) {
 	if len(events) != 1 || int(events[0]["event_id"].(float64)) != eventId {
 		t.Fatalf("unexpected getOwnerEvents response: %v", events)
 	}
+	if events[0]["active"] != true || events[0]["event_time"] != "10:30" || events[0]["noted_count"] != float64(0) || events[0]["created_at"] == "" {
+		t.Fatalf("unexpected getOwnerEvents fields: %v", events[0])
+	}
+}
+
+func TestGetEvent(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+
+	teacher := loginToken(t, app, testOwner+"@tpu.ru")
+	other := loginToken(t, app, testOtherOwner+"@tpu.ru")
+	student := loginToken(t, app, "student1@tpu.ru")
+
+	_, created := postAs(t, app, teacher, "/api/v1/attendance/createEvent", map[string]string{"event_name": "x", "event_time": "10:00"})
+	eventId := created["event_id"]
+	code := created["code"].(string)
+	body := map[string]any{"event_id": eventId}
+
+	// при потере ответа updateCode сайт узнаёт текущий код здесь
+	_, rotated := postAs(t, app, teacher, "/api/v1/attendance/updateCode", map[string]string{"code": code})
+	newCode := rotated["new_code"].(string)
+
+	_, event := postAs(t, app, teacher, "/api/v1/attendance/getEvent", body)
+	if event["active"] != true || event["code"] != newCode || event["event_time"] != "10:00" || event["event_name"] != "x" {
+		t.Fatalf("unexpected getEvent response: %v", event)
+	}
+	if list, ok := event["noted_students"].([]any); !ok || len(list) != 0 {
+		t.Fatalf("empty noted_students must be an array, got %v", event["noted_students"])
+	}
+
+	_, scan := postAs(t, app, student, "/api/v1/attendance/scan", map[string]string{"qrCode": newCode})
+	if scan["success"] != true {
+		t.Fatalf("scan: %v", scan)
+	}
+
+	_, result := postAs(t, app, other, "/api/v1/attendance/getEvent", body)
+	expectError(t, result, "EVENT_NOT_FOUND")
+
+	status, _ := postAs(t, app, student, "/api/v1/attendance/getEvent", body)
+	if status != fiber.StatusForbidden {
+		t.Fatalf("student getEvent: status %d, want 403", status)
+	}
+
+	// после закрытия список остаётся, а код больше не отдаётся
+	postAs(t, app, teacher, "/api/v1/attendance/disableEventUpdating", body)
+	_, event = postAs(t, app, teacher, "/api/v1/attendance/getEvent", body)
+	if _, hasCode := event["code"]; hasCode || event["active"] != false {
+		t.Fatalf("closed event must have no code: %v", event)
+	}
+	list, _ := event["noted_students"].([]any)
+	if len(list) != 1 || list[0] != "Студент Номер 1" {
+		t.Fatalf("final list: %v", event["noted_students"])
+	}
+}
+
+func TestCloseAbandonedEvents(t *testing.T) {
+	setupTestApp(t)
+	ctx := context.Background()
+
+	var abandonedId, freshId int
+	query := `
+			INSERT INTO events (event_name, event_owner, event_code, expiration_time, event_time, update_need, noted_students)
+			VALUES ('x', $1, $2, now() - $3::interval, '10:00', true, '[{"login": "student1"}]')
+			RETURNING event_id
+			`
+	if err := database.GetPool().QueryRow(ctx, query, testOwner, "abandoned-test-1", time.Hour).Scan(&abandonedId); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.GetPool().QueryRow(ctx, query, testOwner, "abandoned-test-2", time.Minute).Scan(&freshId); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := database.CloseAbandonedEvents(ctx, closeGrace); err != nil {
+		t.Fatal(err)
+	}
+
+	abandoned, err := database.GetEventById(ctx, abandonedId, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abandoned.UpdateNeed || len(abandoned.NotedStudents) != 1 {
+		t.Fatalf("abandoned event must be closed and keep its list: %+v", abandoned)
+	}
+
+	fresh, err := database.GetEventById(ctx, freshId, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.UpdateNeed {
+		t.Fatal("event inside grace period must stay open")
+	}
+}
+
+func TestProxyHeader(t *testing.T) {
+	setupTestApp(t)
+
+	login := func(app *fiber.App, ip string) int {
+		data := []byte(`{"email":"student1@tpu.ru","password":"wrong"}`)
+		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", ip)
+		resp, err := app.Test(req, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// за прокси у каждого клиента свой счётчик
+	proxied := newApp("X-Forwarded-For")
+	for i := 0; i < 11; i++ {
+		login(proxied, "203.0.113.1")
+	}
+	if status := login(proxied, "203.0.113.1"); status != fiber.StatusTooManyRequests {
+		t.Fatalf("exhausted client: status %d, want 429", status)
+	}
+	if status := login(proxied, "203.0.113.2"); status == fiber.StatusTooManyRequests {
+		t.Fatal("other client must not share the limit")
+	}
+
+	// без настройки заголовок клиента не влияет на лимит
+	direct := newApp("")
+	for i := 0; i < 11; i++ {
+		login(direct, "203.0.113.1")
+	}
+	if status := login(direct, "203.0.113.2"); status != fiber.StatusTooManyRequests {
+		t.Fatalf("spoofed header: status %d, want 429", status)
+	}
 }
 
 func TestDeleteExpiredEvents(t *testing.T) {
@@ -407,7 +535,7 @@ func TestDeleteExpiredEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := database.DeleteExpiredEvents(ctx, cleanupGrace)
+	ids, err := database.DeleteExpiredEvents(ctx, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +650,7 @@ func TestIdentityComesFromToken(t *testing.T) {
 		t.Fatalf("unexpected createEvent response: %v", result)
 	}
 
-	event, err := database.GetEventById(context.Background(), int(eventId))
+	event, err := database.GetEventById(context.Background(), int(eventId), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +668,7 @@ func TestIdentityComesFromToken(t *testing.T) {
 		t.Fatalf("unexpected scan response: %v", result)
 	}
 
-	event, err = database.GetEventById(context.Background(), int(eventId))
+	event, err = database.GetEventById(context.Background(), int(eventId), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +732,7 @@ func TestOtherTeacherCannotTouchEvent(t *testing.T) {
 	_, result = postAs(t, app, otherToken, "/api/v1/attendance/updateCode", map[string]string{"code": eventCode})
 	expectError(t, result, "INVALID_QR")
 
-	event, err := database.GetEventById(context.Background(), int(eventId))
+	event, err := database.GetEventById(context.Background(), int(eventId), "")
 	if err != nil {
 		t.Fatalf("event must still exist: %v", err)
 	}

@@ -16,6 +16,7 @@ func SetupAttendanceRoutes(attendanceGroup fiber.Router) {
 	attendanceGroup.Post("/scan", auth.RequireRole(utils.RoleStudent), newLimiter(scanLimit, userOrIPKey), handlers.Scan)
 	attendanceGroup.Post("/createEvent", teacherOnly, handlers.CreateEvent)
 	attendanceGroup.Post("/getOwnerEvents", teacherOnly, handlers.GetOwnersEvents)
+	attendanceGroup.Post("/getEvent", teacherOnly, handlers.GetEvent)
 	attendanceGroup.Post("/disableEventUpdating", teacherOnly, handlers.DisableEventUpdating)
 	attendanceGroup.Post("/deleteEvent", teacherOnly, handlers.DeleteEvent)
 	attendanceGroup.Post("/updateCode", teacherOnly, handlers.UpdateCode)

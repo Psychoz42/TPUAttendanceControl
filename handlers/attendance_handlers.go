@@ -158,10 +158,73 @@ func GetOwnersEvents(c *fiber.Ctx) error {
 
 	eventsResponse := []utils.OwnersEventData{}
 	for _, e := range events {
-		eventsResponse = append(eventsResponse, utils.OwnersEventData{Id: e.Id, Name: e.Name})
+		eventsResponse = append(eventsResponse, utils.OwnersEventData{
+			Id:         e.Id,
+			Name:       e.Name,
+			Time:       e.Time.Format("15:04"),
+			CreatedAt:  e.CreatedAt,
+			Active:     e.UpdateNeed,
+			NotedCount: len(e.NotedStudents),
+		})
 	}
 
 	return c.JSON(eventsResponse)
+}
+
+// GetEvent нужен, чтобы вернуться к занятию после обновления страницы или потери ответа
+// updateCode и чтобы получить итоговый список после закрытия
+func GetEvent(c *fiber.Ctx) error {
+	eventId := new(struct {
+		EventId int `json:"event_id"`
+	})
+
+	if err := c.BodyParser(eventId); err != nil {
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid event data format")
+	}
+
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	event, err := database.GetEventById(ctx, eventId.EventId, auth.CurrentUsername(c))
+	if errors.Is(err, database.ErrNotFound) {
+		return sendError(c, "EVENT_NOT_FOUND", "No such event")
+	}
+	if err != nil {
+		log.Printf("getEvent: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to get event")
+	}
+
+	resp := utils.EventDetails{
+		Id:            event.Id,
+		Name:          event.Name,
+		Time:          event.Time.Format("15:04"),
+		CreatedAt:     event.CreatedAt,
+		Active:        event.UpdateNeed,
+		NotedStudents: []string{},
+	}
+	if event.UpdateNeed {
+		resp.Code = event.Code
+	}
+	if names := studentFullNames(event.NotedStudents); names != nil {
+		resp.NotedStudents = names
+	}
+
+	return c.JSON(resp)
+}
+
+// для неизвестного логина отдаёт сам логин. Для пустого списка возвращает nil
+func studentFullNames(students []utils.Student) []string {
+	var names []string
+
+	for _, student := range students {
+		fullName, err := apisim.GetFullNameByUsername(student.Login)
+		if err != nil {
+			fullName = student.Login
+		}
+		names = append(names, fullName)
+	}
+
+	return names
 }
 
 func DisableEventUpdating(c *fiber.Ctx) error {
@@ -241,24 +304,14 @@ func UpdateCode(c *fiber.Ctx) error {
 		return sendError(c, "DB_ERROR", "Failed to update code")
 	}
 
-	// пустой список уходит как null, фронт пока получает его в таком виде
-	var notedStudentsStrings []string
-
-	for _, student := range notedStudents {
-		fullName, err := apisim.GetFullNameByUsername(student.Login)
-		if err != nil {
-			fullName = student.Login
-		}
-		notedStudentsStrings = append(notedStudentsStrings, fullName)
-	}
-
 	resp := new(struct {
 		NewCode       string   `json:"new_code"`
 		NotedStudents []string `json:"noted_students"`
 	})
 
 	resp.NewCode = newCode
-	resp.NotedStudents = notedStudentsStrings
+	// пустой список уходит как null, фронт пока получает его в таком виде
+	resp.NotedStudents = studentFullNames(notedStudents)
 
 	return c.JSON(resp)
 }

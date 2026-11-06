@@ -1,0 +1,9 @@
+.git
+.env
+users.txt
+tpu_att
+tpu_att.exe
+dist
+deploy
+migrations
+*.md
