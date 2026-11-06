@@ -157,6 +157,118 @@ func notedCount(t *testing.T, eventId int) int {
 	return len(event.NotedStudents)
 }
 
+// льготный срок идёт секунды, поэтому в тестах его заканчиваем напрямую, а не ждём
+func endPreviousCodeGrace(t *testing.T, eventId int) {
+	t.Helper()
+
+	_, err := database.GetPool().Exec(context.Background(),
+		"UPDATE events SET previous_code_expiration_time = now() - interval '1 second' WHERE event_id = $1", eventId)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rotateCode(t *testing.T, app *fiber.App, oldCode string) string {
+	t.Helper()
+
+	_, result := post(t, app, "/api/v1/attendance/updateCode", map[string]string{"code": oldCode})
+	newCode, _ := result["new_code"].(string)
+	if len(newCode) != 16 {
+		t.Fatalf("unexpected updateCode response: %v", result)
+	}
+	return newCode
+}
+
+func expectScanOK(t *testing.T, app *fiber.App, qrCode string, username string) {
+	t.Helper()
+
+	_, result := post(t, app, "/api/v1/attendance/scan", map[string]string{"qrCode": qrCode, "username": username})
+	if result["success"] != true {
+		t.Fatalf("scan by %s: unexpected response %v", username, result)
+	}
+}
+
+func expectScanRejected(t *testing.T, app *fiber.App, qrCode string, username string) {
+	t.Helper()
+
+	_, result := post(t, app, "/api/v1/attendance/scan", map[string]string{"qrCode": qrCode, "username": username})
+	expectError(t, result, "INVALID_QR")
+}
+
+func TestPreviousCodeGrace(t *testing.T) {
+	app := setupTestApp(t)
+	eventId, firstCode := createTestEvent(t, app)
+
+	// сразу после смены отметиться можно и старым, и новым кодом
+	secondCode := rotateCode(t, app, firstCode)
+	expectScanOK(t, app, firstCode, "student1")
+	expectScanOK(t, app, secondCode, "student2")
+	if n := notedCount(t, eventId); n != 2 {
+		t.Fatalf("noted %d students, want 2", n)
+	}
+
+	// льготный срок есть только у одного предыдущего кода
+	thirdCode := rotateCode(t, app, secondCode)
+	expectScanRejected(t, app, firstCode, "student3")
+	expectScanOK(t, app, secondCode, "student3")
+
+	// сменить код по предыдущему нельзя, льготный срок касается только scan
+	_, result := post(t, app, "/api/v1/attendance/updateCode", map[string]string{"code": secondCode})
+	expectError(t, result, "INVALID_QR")
+
+	endPreviousCodeGrace(t, eventId)
+	expectScanRejected(t, app, secondCode, "student4")
+	expectScanOK(t, app, thirdCode, "student4")
+
+	// закрытие занятия отключает и предыдущий код
+	fourthCode := rotateCode(t, app, thirdCode)
+	_, result = post(t, app, "/api/v1/attendance/disableEventUpdating", map[string]int{"event_id": eventId})
+	if result["success"] != true {
+		t.Fatalf("unexpected disableEventUpdating response: %v", result)
+	}
+	expectScanRejected(t, app, thirdCode, "student5")
+	expectScanRejected(t, app, fourthCode, "student5")
+}
+
+func TestExpiredCodeDoesNotRevive(t *testing.T) {
+	app := setupTestApp(t)
+	eventId, oldCode := createTestEvent(t, app)
+
+	_, err := database.GetPool().Exec(context.Background(),
+		"UPDATE events SET expiration_time = now() - interval '1 second' WHERE event_id = $1", eventId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectScanRejected(t, app, oldCode, "student1")
+
+	// updateCode работает и с истёкшим кодом, но отметиться им после этого нельзя
+	newCode := rotateCode(t, app, oldCode)
+	expectScanRejected(t, app, oldCode, "student1")
+	expectScanOK(t, app, newCode, "student1")
+}
+
+func TestCodeLifetime(t *testing.T) {
+	app := setupTestApp(t)
+	eventId, eventCode := createTestEvent(t, app)
+
+	check := func(stage string) {
+		t.Helper()
+
+		var ok bool
+		query := "SELECT expiration_time > now() AND expiration_time <= now() + interval '30 seconds' FROM events WHERE event_id = $1"
+		if err := database.GetPool().QueryRow(context.Background(), query, eventId).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatalf("%s: code must live no longer than 30 seconds", stage)
+		}
+	}
+
+	check("createEvent")
+	rotateCode(t, app, eventCode)
+	check("updateCode")
+}
+
 func TestCreateEventValidation(t *testing.T) {
 	app := setupTestApp(t)
 
@@ -205,6 +317,7 @@ func TestScanFlow(t *testing.T) {
 	_, result = post(t, app, "/api/v1/attendance/updateCode", map[string]string{"code": eventCode})
 	expectError(t, result, "INVALID_QR")
 
+	endPreviousCodeGrace(t, eventId)
 	_, result = post(t, app, "/api/v1/attendance/scan", map[string]string{"qrCode": eventCode, "username": "student2"})
 	expectError(t, result, "INVALID_QR")
 

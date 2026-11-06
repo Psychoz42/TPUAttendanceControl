@@ -77,12 +77,16 @@ func GetEventById(ctx context.Context, id int) (utils.Event, error) {
 }
 
 // GetActiveEventByCode ищет событие, по коду которого сейчас можно отметиться:
-// ротация не выключена и срок действия кода не истёк
+// ротация не выключена и срок действия кода не истёк. Подходит и предыдущий код,
+// пока не кончился его короткий льготный срок
 func GetActiveEventByCode(ctx context.Context, eventCode string) (utils.Event, error) {
 	query := `
 			SELECT ` + eventColumns + `
 			FROM events
-			WHERE event_code = $1 AND update_need AND expiration_time > now()
+			WHERE update_need AND (
+				(event_code = $1 AND expiration_time > now())
+				OR (previous_event_code = $1 AND previous_code_expiration_time > now())
+			)
 			`
 
 	event, err := scanEvent(pool.QueryRow(ctx, query, eventCode))
@@ -176,13 +180,17 @@ func DeleteExpiredEvents(ctx context.Context, grace time.Duration) ([]int, error
 	return ids, nil
 }
 
-// RotateEventCode меняет код активного события и продлевает срок.
+// RotateEventCode меняет код активного события и продлевает срок. Старый код ещё grace
+// принимается для отметки, но не дольше собственного срока: истёкший код не оживает.
 // Возвращает ErrNotFound, если код неизвестен или ротация выключена
-func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration, owner string) (string, []utils.Student, error) {
+func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration, grace time.Duration, owner string) (string, []utils.Student, error) {
 	query := `
 			UPDATE events
-			SET event_code = $2, expiration_time = now() + $3::interval
-			WHERE event_code = $1 AND update_need AND ($4::text = '' OR event_owner = $4)
+			SET previous_event_code = event_code,
+				previous_code_expiration_time = LEAST(expiration_time, now() + $4::interval),
+				event_code = $2,
+				expiration_time = now() + $3::interval
+			WHERE event_code = $1 AND update_need AND ($5::text = '' OR event_owner = $5)
 			RETURNING event_id, noted_students
 			`
 
@@ -192,7 +200,7 @@ func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration, own
 
 		var id int
 		var students []utils.Student
-		err = pool.QueryRow(ctx, query, oldCode, newCode, ttl, owner).Scan(&id, &students)
+		err = pool.QueryRow(ctx, query, oldCode, newCode, ttl, grace, owner).Scan(&id, &students)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, ErrNotFound
 		}

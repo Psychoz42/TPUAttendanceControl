@@ -15,8 +15,14 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// сколько живёт QR-код после создания события и после каждого updateCode
-const codeTTL = 5 * time.Minute
+// сколько живёт QR-код после создания события и после каждого updateCode. Сайт меняет код
+// примерно каждые 10 секунд, чтобы его не успевали переслать. Этот срок ограничивает пересылку,
+// если сайт перестал обновлять код: закрыли вкладку или пропала сеть
+const codeTTL = 30 * time.Second
+
+// сколько предыдущий код ещё принимается в scan: код мог смениться, пока запрос студента
+// шёл к серверу, а экран сайта показывает старый код, пока ждёт ответа updateCode
+const previousCodeGrace = 3 * time.Second
 
 const dbTimeout = 5 * time.Second
 
@@ -226,7 +232,7 @@ func UpdateCode(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	newCode, notedStudents, err := database.RotateEventCode(ctx, eventCode.Code, codeTTL, auth.CurrentUsername(c))
+	newCode, notedStudents, err := database.RotateEventCode(ctx, eventCode.Code, codeTTL, previousCodeGrace, auth.CurrentUsername(c))
 	if errors.Is(err, database.ErrNotFound) {
 		return sendError(c, "INVALID_QR", "Code is invalid or event updating is disabled")
 	}
