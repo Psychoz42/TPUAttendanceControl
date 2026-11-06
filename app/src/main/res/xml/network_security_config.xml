@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Сетевая политика приложения.
-    По умолчанию весь незашифрованный HTTP-трафик запрещён, доверяем только
+    Весь незашифрованный HTTP-трафик запрещён, доверяем только
     системным сертификатам (пользовательские CA не принимаются).
-
-    ВРЕМЕННОЕ исключение: бэкенд psychoz.site пока не поддерживает HTTPS
-    (порт 443 закрыт). Как только на сервере появится TLS-сертификат,
-    удалите блок domain-config и поменяйте BASE_URL на https:// в app/build.gradle.kts.
+    Для debug-сборки HTTP разрешён в src/debug/res/xml/network_security_config.xml.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -14,8 +11,4 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">psychoz.site</domain>
-    </domain-config>
 </network-security-config>

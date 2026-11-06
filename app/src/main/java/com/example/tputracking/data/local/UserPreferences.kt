@@ -22,6 +22,7 @@ private val LEGACY_KEY_EMAIL = stringPreferencesKey("email")
 private val LEGACY_KEY_GROUP = stringPreferencesKey("group")
 
 private val KEY_USER_ENCRYPTED = stringPreferencesKey("user_encrypted")
+private val KEY_TOKEN_ENCRYPTED = stringPreferencesKey("token_encrypted")
 
 private val cryptoManager by lazy { CryptoManager() }
 
@@ -42,7 +43,8 @@ private object EncryptLegacyUserMigration : DataMigration<Preferences> {
             username = prefs[LEGACY_KEY_USERNAME] ?: "",
             fullName = prefs[LEGACY_KEY_FULL_NAME] ?: "",
             email = prefs[LEGACY_KEY_EMAIL] ?: "",
-            group = prefs[LEGACY_KEY_GROUP] ?: ""
+            group = prefs[LEGACY_KEY_GROUP] ?: "",
+            role = ""
         )
         prefs[KEY_USER_ENCRYPTED] = cryptoManager.encrypt(legacyUser.toJson())
         prefs.remove(LEGACY_KEY_USERNAME)
@@ -61,6 +63,7 @@ private fun User.toJson(): String =
         .put("fullName", fullName)
         .put("email", email)
         .put("group", group)
+        .put("role", role)
         .toString()
 
 private fun userFromJson(json: String): User? =
@@ -70,14 +73,19 @@ private fun userFromJson(json: String): User? =
             username = obj.getString("username"),
             fullName = obj.optString("fullName"),
             email = obj.optString("email"),
-            group = obj.optString("group")
+            group = obj.optString("group"),
+            role = obj.optString("role")
         )
     } catch (e: Exception) {
         null
     }
 
 /**
- * Профиль пользователя хранится в DataStore в зашифрованном виде (AES-GCM, ключ в Android Keystore).
+ * Профиль пользователя и токен хранятся в DataStore в зашифрованном виде
+ * (AES-GCM, ключ в Android Keystore).
+ *
+ * Токен хранится отдельно от профиля: [User] попадает в состояние UI, а токену там не место.
+ * Профиль без токена означает истёкшую сессию: история и email сохраняются до нового входа.
  */
 class UserPreferences(private val context: Context) {
 
@@ -86,12 +94,25 @@ class UserPreferences(private val context: Context) {
         cryptoManager.decrypt(encrypted)?.let(::userFromJson)
     }.flowOn(Dispatchers.IO)
 
-    suspend fun saveUser(user: User) {
-        val encrypted = withContext(Dispatchers.IO) {
-            cryptoManager.encrypt(user.toJson())
+    val token: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[KEY_TOKEN_ENCRYPTED]?.let(cryptoManager::decrypt)
+    }.flowOn(Dispatchers.IO)
+
+    /** Профиль и токен пишутся одним edit, чтобы не получить половину сессии. */
+    suspend fun saveSession(user: User, token: String) {
+        val (encryptedUser, encryptedToken) = withContext(Dispatchers.IO) {
+            cryptoManager.encrypt(user.toJson()) to cryptoManager.encrypt(token)
         }
         context.dataStore.edit { prefs ->
-            prefs[KEY_USER_ENCRYPTED] = encrypted
+            prefs[KEY_USER_ENCRYPTED] = encryptedUser
+            prefs[KEY_TOKEN_ENCRYPTED] = encryptedToken
+        }
+    }
+
+    /** Сбрасывает только токен: профиль нужен, чтобы отличить истёкшую сессию от выхода. */
+    suspend fun clearToken() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_TOKEN_ENCRYPTED)
         }
     }
 

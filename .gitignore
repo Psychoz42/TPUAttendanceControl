@@ -18,3 +18,4 @@ local.properties
 *.zip
 *.jks
 *.keystore
+keystore.properties

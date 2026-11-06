@@ -25,6 +25,12 @@ interface AttendanceDao {
         items: List<AttendanceEntity>
     )
 
+    @Query("SELECT EXISTS(SELECT 1 FROM attendance WHERE subject = :subject AND dateTime = :dateTime)")
+    suspend fun exists(
+        subject: String,
+        dateTime: String
+    ): Boolean
+
     @Query("DELETE FROM attendance")
     suspend fun clearAll()
 }

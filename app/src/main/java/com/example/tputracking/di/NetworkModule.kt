@@ -3,6 +3,7 @@ package com.example.tputracking.di
 import android.content.Context
 import com.example.tputracking.BuildConfig
 import com.example.tputracking.data.local.UserPreferences
+import com.example.tputracking.data.remote.AuthInterceptor
 import com.example.tputracking.data.remote.api.AuthApiService
 import com.example.tputracking.data.remote.api.AttendanceApiService
 import okhttp3.OkHttpClient
@@ -21,15 +22,18 @@ object NetworkModule {
         return UserPreferences(context)
     }
 
-    fun provideOkHttp(): OkHttpClient {
+    fun provideOkHttp(
+        userPreferences: UserPreferences
+    ): OkHttpClient {
 
         val builder = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor(AuthInterceptor(userPreferences))
 
         // Логируем только в debug-сборке и без тел запросов:
-        // уровень BODY писал в logcat пароль и персональные данные.
+        // уровень BODY писал бы в logcat пароль и токен из ответа входа.
         if (BuildConfig.DEBUG) {
             val logging = HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC

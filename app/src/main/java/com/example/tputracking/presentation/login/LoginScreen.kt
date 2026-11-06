@@ -146,30 +146,13 @@ fun LoginScreen(
 
                     Spacer(modifier = Modifier.height(18.dp))
 
-                    Box(
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-
-                        Text(
-                            text = "ПАРОЛЬ",
-                            color = TextSecondary,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.align(Alignment.CenterStart)
-                        )
-
-                        Text(
-                            text = "ЗАБЫЛИ ПАРОЛЬ?",
-                            color = GreenPrimary,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .clickable {
-                                    // TODO
-                                }
-                        )
-                    }
+                    // «Забыли пароль?» скрыто до реализации восстановления
+                    Text(
+                        text = "ПАРОЛЬ",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -199,6 +182,17 @@ fun LoginScreen(
                         Text(
                             text = message,
                             color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+
+                    state.infoMessage?.let { message ->
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = message,
+                            color = TextSecondary,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.fillMaxWidth(),
                             textAlign = TextAlign.Center

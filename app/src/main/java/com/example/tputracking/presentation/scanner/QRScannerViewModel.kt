@@ -3,6 +3,8 @@ package com.example.tputracking.presentation.scanner
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.tputracking.domain.model.ScanErrorReason
+import com.example.tputracking.domain.model.ScanException
 import com.example.tputracking.domain.repository.AttendanceRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,11 +24,17 @@ class QRScannerViewModel(
 
     private var isProcessing = false
 
+    // Анализатор присылает код почти на каждом кадре. Отклонённый код повторно не отправляем,
+    // иначе один устаревший QR за секунды исчерпает лимит сервера (30 сканов в минуту).
+    private var lastRejectedCode: String? = null
+
+    private var hintCounter = 0L
+
     fun onQrCodeScanned(
         qrCode: String
     ) {
 
-        if (isProcessing) return
+        if (isProcessing || qrCode == lastRejectedCode) return
 
         isProcessing = true
 
@@ -35,7 +43,6 @@ class QRScannerViewModel(
             _uiState.value =
                 _uiState.value.copy(
                     isLoading = true,
-                    isScanning = false,
                     errorMessage = null
                 )
 
@@ -47,19 +54,53 @@ class QRScannerViewModel(
                 _uiState.value =
                     _uiState.value.copy(
                         isLoading = false,
-                        scanResult = data
+                        isScanning = false,
+                        scanResult = data,
+                        hint = null
                     )
             }
 
             result.onFailure { error ->
 
-                _uiState.value =
-                    _uiState.value.copy(
-                        isLoading = false,
-                        isScanning = false, // Stop scanning while dialog is shown
-                        errorMessage =
-                            error.message
-                    )
+                val message = error.message ?: "Произошла неизвестная ошибка"
+
+                when ((error as? ScanException)?.reason) {
+
+                    // QR на экране меняется примерно каждые 10 секунд: код мог смениться
+                    // за время запроса. Не блокируем экран, ждём следующий код.
+                    ScanErrorReason.INVALID_QR,
+                    ScanErrorReason.INVALID_FORMAT -> {
+
+                        lastRejectedCode = qrCode
+                        isProcessing = false
+
+                        _uiState.value =
+                            _uiState.value.copy(
+                                isLoading = false,
+                                hint = ScanHint(++hintCounter, message)
+                            )
+                    }
+
+                    // Токен сброшен, AppNavGraph сам откроет экран входа
+                    ScanErrorReason.UNAUTHORIZED -> {
+
+                        _uiState.value =
+                            _uiState.value.copy(
+                                isLoading = false,
+                                isScanning = false
+                            )
+                    }
+
+                    else -> {
+
+                        _uiState.value =
+                            _uiState.value.copy(
+                                isLoading = false,
+                                isScanning = false, // Stop scanning while dialog is shown
+                                errorMessage = message
+                            )
+                    }
+                }
             }
         }
     }

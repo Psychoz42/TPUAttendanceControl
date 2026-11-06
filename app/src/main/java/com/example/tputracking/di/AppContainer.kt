@@ -20,7 +20,7 @@ class AppDataContainer(private val context: Context) : AppContainer {
     }
 
     private val okHttpClient by lazy {
-        NetworkModule.provideOkHttp()
+        NetworkModule.provideOkHttp(userPreferences)
     }
 
     private val retrofit by lazy {
@@ -44,6 +44,6 @@ class AppDataContainer(private val context: Context) : AppContainer {
     }
 
     override val attendanceRepository: AttendanceRepository by lazy {
-        AttendanceRepositoryImpl(attendanceApiService, database.attendanceDao(), userPreferences)
+        AttendanceRepositoryImpl(attendanceApiService, database.attendanceDao())
     }
 }

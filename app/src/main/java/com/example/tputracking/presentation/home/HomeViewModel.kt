@@ -34,6 +34,13 @@ class HomeViewModel(
         observeUser()
     }
 
+    /** Явный выход: экран входа откроет AppNavGraph, когда сбросится токен. */
+    fun logout() {
+        viewModelScope.launch {
+            authRepository.logout()
+        }
+    }
+
     private fun observeUser() {
         viewModelScope.launch {
             authRepository.getUser().collectLatest { user ->

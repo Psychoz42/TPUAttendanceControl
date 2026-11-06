@@ -26,11 +26,20 @@ fun AppNavGraph(
         .uiState
         .collectAsState()
 
+    val sessionActive by
+    splashViewModel
+        .sessionActive
+        .collectAsState()
+
     LaunchedEffect(
         splashState.isLoading
     ) {
 
-        if (!splashState.isLoading) {
+        // Эффект перезапускается при пересоздании Activity (поворот экрана),
+        // поэтому начальную навигацию выполняем только с экрана запуска
+        if (!splashState.isLoading &&
+            navController.currentDestination?.route == Routes.Splash.route
+        ) {
 
             if (splashState.isAuthorized) {
 
@@ -56,6 +65,32 @@ fun AppNavGraph(
                     ) {
                         inclusive = true
                     }
+                }
+            }
+        }
+    }
+
+    // Токен сброшен (401, выход): открываем вход и очищаем стек
+    LaunchedEffect(
+        sessionActive
+    ) {
+
+        val route = navController.currentDestination?.route
+
+        if (sessionActive == false &&
+            route != null &&
+            route != Routes.Splash.route &&
+            route != Routes.Login.route
+        ) {
+
+            navController.navigate(
+                Graph.AUTH
+            ) {
+
+                popUpTo(
+                    navController.graph.id
+                ) {
+                    inclusive = true
                 }
             }
         }

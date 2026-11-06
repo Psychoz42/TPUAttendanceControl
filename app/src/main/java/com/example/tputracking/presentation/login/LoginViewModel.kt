@@ -16,6 +16,19 @@ class LoginViewModel(
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
+    init {
+        // Профиль без токена: сессия истекла, подставляем email
+        viewModelScope.launch {
+            val email = authRepository.getExpiredSessionEmail() ?: return@launch
+            if (_uiState.value.email.isEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    email = email,
+                    infoMessage = "Сессия истекла, войдите снова"
+                )
+            }
+        }
+    }
+
     fun onEmailChanged(value: String) {
         _uiState.value = _uiState.value.copy(
             email = value,
@@ -38,7 +51,8 @@ class LoginViewModel(
 
     fun login() {
         val email = _uiState.value.email.trim()
-        val password = _uiState.value.password.trim()
+        // Пароль отправляем ровно как ввёл пользователь: пробелы могут быть его частью
+        val password = _uiState.value.password
 
         var emailError: String? = null
         var passwordError: String? = null
@@ -60,7 +74,11 @@ class LoginViewModel(
 
         if (emailError == null && passwordError == null) {
             viewModelScope.launch {
-                _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = true,
+                    errorMessage = null,
+                    infoMessage = null
+                )
                 
                 val result = authRepository.login(email, password)
                 

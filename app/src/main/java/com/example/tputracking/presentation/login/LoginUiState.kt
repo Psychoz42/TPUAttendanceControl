@@ -7,5 +7,7 @@ data class LoginUiState(
     val passwordError: String? = null,
     val isLoading: Boolean = false,
     val isAuthorized: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // Нейтральная подсказка, например «Сессия истекла»: поля не подсвечиваются как ошибка
+    val infoMessage: String? = null
 )

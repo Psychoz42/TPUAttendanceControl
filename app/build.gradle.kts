@@ -1,8 +1,26 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// Адрес сервера задаётся при сборке: -Ptpu.debugBaseUrl=... / -Ptpu.releaseBaseUrl=...
+// Боевого домена пока нет, заглушку заменят при развёртывании.
+val debugBaseUrl = providers.gradleProperty("tpu.debugBaseUrl")
+    .getOrElse("http://10.0.2.2:8080")
+val releaseBaseUrl = providers.gradleProperty("tpu.releaseBaseUrl")
+    .getOrElse("https://REPLACE-ME.invalid")
+
+// Ключ подписи release читается из keystore.properties (в git не попадает).
+// Без файла assembleRelease собирает неподписанный APK.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
 }
 
 android {
@@ -16,13 +34,27 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // TODO: перейти на https://, как только на сервере появится TLS
-        // (и убрать исключение из res/xml/network_security_config.xml)
-        buildConfigField("String", "BASE_URL", "\"http://psychoz.site\"")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
+        }
         release {
+            buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             // R8: обфускация и вырезание неиспользуемого кода усложняют реверс-инжиниринг APK
             isMinifyEnabled = true
             isShrinkResources = true
@@ -55,8 +87,11 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
     testImplementation(libs.junit)
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")

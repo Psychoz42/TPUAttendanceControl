@@ -10,5 +10,15 @@ data class QRScannerUiState(
 
     val scanResult: ScanResult? = null,
 
-    val errorMessage: String? = null
+    // Ошибка, которую показываем блокирующим диалогом
+    val errorMessage: String? = null,
+
+    // Неблокирующая подсказка (устаревший или посторонний QR): сканирование продолжается
+    val hint: ScanHint? = null
+)
+
+/** id меняется при каждой подсказке, чтобы одинаковый текст показался снова. */
+data class ScanHint(
+    val id: Long,
+    val message: String
 )
