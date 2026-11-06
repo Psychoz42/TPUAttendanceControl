@@ -1,10 +1,11 @@
 package routes
 
 import (
-	"github.com/gofiber/fiber/v2"
 	"backend/handlers"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 func SetupAuthRoutes(authGroup fiber.Router) {
-	authGroup.Post("/login", handlers.Login)
+	authGroup.Post("/login", newLimiter(loginLimit), handlers.Login)
 }

@@ -1,21 +1,24 @@
 package code
 
 import (
-	"math/rand/v2"
+	"crypto/rand"
+	"math/big"
 )
 
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 const codeLength = 16
 
-func generateRandomString(length int) string {
-	b := make([]byte, length)
+// Уникальность кода проверяет constraint events_code_unique,
+// при совпадении database повторяет вставку с новым кодом
+func GenerateNewCode() string {
+	b := make([]byte, codeLength)
+	max := big.NewInt(int64(len(charset)))
 	for i := range b {
-		b[i] = charset[rand.IntN(len(charset))]
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			panic(err) // crypto/rand не возвращает ошибок в Go 1.24+
+		}
+		b[i] = charset[n.Int64()]
 	}
 	return string(b)
-}
-
-func GenerateNewCode() string {
-	code := generateRandomString(codeLength) 
-	return code
 }

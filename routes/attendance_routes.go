@@ -7,7 +7,7 @@ import (
 )
 
 func SetupAttendanceRoutes(attendanceGroup fiber.Router) {
-	attendanceGroup.Post("/scan", handlers.Scan)
+	attendanceGroup.Post("/scan", newLimiter(scanLimit), handlers.Scan)
 	attendanceGroup.Post("/createEvent", handlers.CreateEvent)
 	attendanceGroup.Post("/getOwnerEvents", handlers.GetOwnersEvents)
 	attendanceGroup.Post("/disableEventUpdating", handlers.DisableEventUpdating)

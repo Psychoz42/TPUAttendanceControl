@@ -15,25 +15,19 @@ type ErrorResponse struct {
 }
 
 type LoginRequest struct {
-	Email      string	`json:"email"`
-	Password   string   `json:"password"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type LoginResponse struct {
-	Username   string   `json:"username"`
-	FullName   string   `json:"fullName"`
-	Email      string   `json:"email"`
-	Group      string   `json:"group"`
+	Username string `json:"username"`
+	FullName string `json:"fullName"`
+	Email    string `json:"email"`
+	Group    string `json:"group"`
 }
 
 type Student struct {
 	Login string `json:"login"`
-}
-
-type EventData struct {
-	EventName  string `json:"event_name"`
-	EventOwner string `json:"event_owner"`
-	EventInfo  string `json:"event_info"`
 }
 
 type Event struct {
@@ -49,6 +43,6 @@ type Event struct {
 }
 
 type OwnersEventData struct {
-	Id             int       `json:"event_id"`
-	Name           string    `json:"event_name"`
+	Id   int    `json:"event_id"`
+	Name string `json:"event_name"`
 }

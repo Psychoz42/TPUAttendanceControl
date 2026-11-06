@@ -1,17 +1,38 @@
 package handlers
 
 import (
-	"backend/utils"
-	"time"
 	"backend/apisim"
 	"backend/database"
-
-	"backend/code"
-	"strconv"
+	"backend/utils"
+	"context"
+	"errors"
+	"log"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// сколько живёт QR-код после создания события и после каждого updateCode
+const codeTTL = 5 * time.Minute
+
+const dbTimeout = 5 * time.Second
+
+const maxEventNameLength = 200
+
+func dbContext(c *fiber.Ctx) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.UserContext(), dbTimeout)
+}
+
+func sendError(c *fiber.Ctx, code string, message string) error {
+	return c.JSON(utils.ErrorResponse{Success: false, Code: code, Message: message})
+}
+
+// час одной или двумя цифрами, минуты строго двумя: "9:05" подходит, "9:5" нет
+func parseEventTime(s string) (time.Time, error) {
+	return time.Parse("15:04", s)
+}
 
 func Scan(c *fiber.Ctx) error {
 	qr := new(struct {
@@ -20,21 +41,34 @@ func Scan(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(qr); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid scan data format")
 	}
 
-	eventId, err := database.GetEventIdByCode(qr.QrCode)
+	if qr.QrCode == "" || qr.Username == "" {
+		return sendError(c, "INVALID_DATA_FORMAT", "qrCode and username are required")
+	}
+
+	if _, err := apisim.GetFullNameByUsername(qr.Username); err != nil {
+		return sendError(c, "UNKNOWN_USER", "No such student")
+	}
+
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	event, err := database.GetActiveEventByCode(ctx, qr.QrCode)
+	if errors.Is(err, database.ErrNotFound) {
+		return sendError(c, "INVALID_QR", "QR code is invalid or expired")
+	}
 	if err != nil {
-		c.JSON(utils.ErrorResponse{Success: false, Code: "INVALID_QR", Message: "No such code in database"})
+		log.Printf("scan: %v", err)
+		return sendError(c, "DB_ERROR", "Event search error")
 	}
 
-	event, err := database.GetEventById(eventId)
-	if err != nil {
-		c.JSON(utils.ErrorResponse{Success: false, Code: "DB_ERROR", Message: "Event search error"})
+	// повторный скан тем же студентом ничего не меняет и тоже считается успешным
+	if _, err = database.AddNotedStudent(ctx, event.Id, qr.Username); err != nil {
+		log.Printf("scan: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to note student")
 	}
-
-	notedStudents, _ := database.GetNotedStudents(eventId)
-	database.UpdateNotedStudents(eventId, append(notedStudents, utils.Student{Login: qr.Username}))
 
 	resp := utils.QrScanResponse{Success: true, Subject: event.Name, Time: event.Time.Format("15:04")}
 
@@ -49,28 +83,38 @@ func CreateEvent(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(eventData); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid event data format")
 	}
 
-	array := strings.Split(eventData.Time, ":")
-	hours, _ := strconv.Atoi(array[0])
-	minutes, _ := strconv.Atoi(array[1])
+	name := strings.TrimSpace(eventData.Name)
+	if name == "" || utf8.RuneCountInString(name) > maxEventNameLength {
+		return sendError(c, "INVALID_DATA_FORMAT", "Event name must be from 1 to 200 characters")
+	}
 
-	eventTime := time.Time{}.Add(time.Hour * time.Duration(hours)).Add(time.Minute * time.Duration(minutes))
-	code := code.GenerateNewCode()
-	err := database.CreateEvent(eventData.Name, eventData.Owner, "", code, time.Now().Add(time.Minute*5), eventTime)
+	if strings.TrimSpace(eventData.Owner) == "" {
+		return sendError(c, "INVALID_DATA_FORMAT", "Event owner is required")
+	}
+
+	eventTime, err := parseEventTime(eventData.Time)
 	if err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Event time must be in HH:MM format")
 	}
 
-	eventId, _ := database.GetEventIdByCode(code)
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	eventId, eventCode, err := database.CreateEvent(ctx, name, eventData.Owner, "", eventTime, codeTTL)
+	if err != nil {
+		log.Printf("createEvent: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to create event")
+	}
 
 	eventResponse := new(struct {
 		EventId int    `json:"event_id"`
 		Code    string `json:"code"`
 	})
 	eventResponse.EventId = eventId
-	eventResponse.Code = code
+	eventResponse.Code = eventCode
 
 	return c.JSON(eventResponse)
 }
@@ -81,12 +125,16 @@ func GetOwnersEvents(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(owner); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid owner data format")
 	}
 
-	events, err := database.GetEventsByOwner(owner.Owner)
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	events, err := database.GetEventsByOwner(ctx, owner.Owner)
 	if err != nil {
-		return err
+		log.Printf("getOwnerEvents: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to get events")
 	}
 
 	eventsResponse := []utils.OwnersEventData{}
@@ -103,12 +151,19 @@ func DisableEventUpdating(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(eventId); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid event data format")
 	}
 
-	err := database.UpdateUpdateNeedById(eventId.EventId, false)
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	err := database.UpdateUpdateNeedById(ctx, eventId.EventId, false)
+	if errors.Is(err, database.ErrNotFound) {
+		return sendError(c, "EVENT_NOT_FOUND", "No such event")
+	}
 	if err != nil {
-		return err
+		log.Printf("disableEventUpdating: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to disable event updating")
 	}
 
 	resp := new(struct {
@@ -124,12 +179,19 @@ func DeleteEvent(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(eventId); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid event data format")
 	}
 
-	_, err := database.DeleteEventById(eventId.EventId)
+	ctx, cancel := dbContext(c)
+	defer cancel()
+
+	_, err := database.DeleteEventById(ctx, eventId.EventId)
+	if errors.Is(err, database.ErrNotFound) {
+		return sendError(c, "EVENT_NOT_FOUND", "No such event")
+	}
 	if err != nil {
-		return err
+		log.Printf("deleteEvent: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to delete event")
 	}
 
 	resp := new(struct {
@@ -145,25 +207,35 @@ func UpdateCode(c *fiber.Ctx) error {
 	})
 
 	if err := c.BodyParser(eventCode); err != nil {
-		return err
+		return sendError(c, "INVALID_DATA_FORMAT", "Invalid code data format")
 	}
 
-	eventId, _ := database.GetEventIdByCode(eventCode.Code)
-	newCode := code.GenerateNewCode()
+	ctx, cancel := dbContext(c)
+	defer cancel()
 
-	database.UpdateEventCode(eventId, newCode)
+	newCode, notedStudents, err := database.RotateEventCode(ctx, eventCode.Code, codeTTL)
+	if errors.Is(err, database.ErrNotFound) {
+		return sendError(c, "INVALID_QR", "Code is invalid or event updating is disabled")
+	}
+	if err != nil {
+		log.Printf("updateCode: %v", err)
+		return sendError(c, "DB_ERROR", "Failed to update code")
+	}
 
-	notedStudents, _ := database.GetNotedStudents(eventId)
+	// пустой список уходит как null, фронт пока получает его в таком виде
 	var notedStudentsStrings []string
 
 	for _, student := range notedStudents {
-		fullName, _ := apisim.GetFullNameByUsername(student.Login)
+		fullName, err := apisim.GetFullNameByUsername(student.Login)
+		if err != nil {
+			fullName = student.Login
+		}
 		notedStudentsStrings = append(notedStudentsStrings, fullName)
 	}
 
-	resp := new(struct{
-		NewCode        string   `json:"new_code"`
-		NotedStudents  []string `json:"noted_students`
+	resp := new(struct {
+		NewCode       string   `json:"new_code"`
+		NotedStudents []string `json:"noted_students"`
 	})
 
 	resp.NewCode = newCode

@@ -1,249 +1,160 @@
 package database
 
 import (
+	"backend/code"
 	"backend/utils"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func CreateEvent(name string, owner string, info string, code string, expirationTime time.Time, eventTime time.Time) error {
-	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
-	}
+var ErrNotFound = errors.New("not found")
 
-	query := `
-			INSERT INTO events (event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need)
-			VALUES ($1, $2, $3, $4, $5, $6, true)
-			`
+// сколько раз перегенерировать код, если он совпал с уже существующим
+const codeGenAttempts = 3
 
-	_, err := pool.Exec(context.Background(), query, name, owner, info, code, expirationTime, eventTime)
+const eventColumns = `event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students`
 
-	if err != nil {
-		return fmt.Errorf("event haven't created: %s", err)
-	}
-
-	fmt.Printf("Event created: %s, %s, %s, %s, %s, %s", name, owner, info, code, expirationTime, eventTime)
-
-	return err
+func scanEvent(row pgx.Row) (utils.Event, error) {
+	var event utils.Event
+	err := row.Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
+	return event, err
 }
 
-func GetEventById(id int) (utils.Event, error) {
-	if pool == nil {
-		return utils.Event{}, fmt.Errorf("database is not connected to the server")
+// нарушение UNIQUE constraint, у нас это может быть только event_code
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// CreateEvent сам генерирует код события и возвращает id и код
+func CreateEvent(ctx context.Context, name string, owner string, info string, eventTime time.Time, ttl time.Duration) (int, string, error) {
+	query := `
+			INSERT INTO events (event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need)
+			VALUES ($1, $2, $3, $4, now() + $5::interval, $6, true)
+			RETURNING event_id
+			`
+
+	var err error
+	for i := 0; i < codeGenAttempts; i++ {
+		newCode := code.GenerateNewCode()
+
+		var id int
+		err = pool.QueryRow(ctx, query, name, owner, info, newCode, ttl, eventTime).Scan(&id)
+		if err == nil {
+			fmt.Printf("event with id=%d been created\n", id)
+			return id, newCode, nil
+		}
+		if !isUniqueViolation(err) {
+			break
+		}
+		fmt.Println("regenerating code")
 	}
 
+	return -1, "", fmt.Errorf("create event: %w", err)
+}
+
+func GetEventById(ctx context.Context, id int) (utils.Event, error) {
 	query := `
-			SELECT event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students 
+			SELECT ` + eventColumns + `
 			FROM events
 			WHERE event_id = $1
 			`
 
-	var event utils.Event
-	err := pool.QueryRow(context.Background(), query, id).Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
-
+	event, err := scanEvent(pool.QueryRow(ctx, query, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return utils.Event{}, ErrNotFound
+	}
 	if err != nil {
-		return utils.Event{}, fmt.Errorf("%s", err)
+		return utils.Event{}, fmt.Errorf("get event id=%d: %w", id, err)
 	}
 
-	return event, err
+	return event, nil
 }
 
-func GetEventsByOwner(owner string) ([]utils.Event, error) {
-	if pool == nil {
-		return []utils.Event{}, fmt.Errorf("database is not connected to the server")
+// GetActiveEventByCode ищет событие, по коду которого сейчас можно отметиться:
+// ротация не выключена и срок действия кода не истёк
+func GetActiveEventByCode(ctx context.Context, eventCode string) (utils.Event, error) {
+	query := `
+			SELECT ` + eventColumns + `
+			FROM events
+			WHERE event_code = $1 AND update_need AND expiration_time > now()
+			`
+
+	event, err := scanEvent(pool.QueryRow(ctx, query, eventCode))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return utils.Event{}, ErrNotFound
+	}
+	if err != nil {
+		return utils.Event{}, fmt.Errorf("get active event by code: %w", err)
 	}
 
+	return event, nil
+}
+
+func GetEventsByOwner(ctx context.Context, owner string) ([]utils.Event, error) {
 	query := `
-			SELECT event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students 
+			SELECT ` + eventColumns + `
 			FROM events
 			WHERE event_owner = $1
 			`
 
-	rows, err := pool.Query(context.Background(), query, owner)
-
+	rows, err := pool.Query(ctx, query, owner)
 	if err != nil {
-		return []utils.Event{}, fmt.Errorf("%s", err)
+		return nil, fmt.Errorf("get events by owner: %w", err)
 	}
 	defer rows.Close()
 
 	var events []utils.Event
 	for rows.Next() {
-		var event utils.Event
-		err = rows.Scan(&event.Id, &event.Name, &event.Owner, &event.Info, &event.Code, &event.ExpirationTime, &event.Time, &event.UpdateNeed, &event.NotedStudents)
+		event, err := scanEvent(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan event_id: %s", err)
+			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, event)
 	}
-
-	return events, err
-}
-
-func DeleteEventById(id int) (utils.Event, error) {
-	if pool == nil {
-		return utils.Event{}, fmt.Errorf("database is not connected to the server")
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("get events by owner: %w", err)
 	}
 
+	return events, nil
+}
+
+func DeleteEventById(ctx context.Context, id int) (utils.Event, error) {
 	query := `
 			DELETE FROM events
 			WHERE event_id = $1
-			RETURNING event_id, event_name, event_owner, event_info, event_code, expiration_time, event_time, update_need, noted_students
+			RETURNING ` + eventColumns + `
 			`
-	var deletedEvent utils.Event
-	err := pool.QueryRow(context.Background(), query, id).Scan(&deletedEvent.Id, &deletedEvent.Name, &deletedEvent.Owner, &deletedEvent.Info, &deletedEvent.Code, &deletedEvent.ExpirationTime, &deletedEvent.Time, &deletedEvent.UpdateNeed, &deletedEvent.NotedStudents)
 
+	deletedEvent, err := scanEvent(pool.QueryRow(ctx, query, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return utils.Event{}, ErrNotFound
+	}
 	if err != nil {
-		return utils.Event{}, fmt.Errorf("%s", err)
+		return utils.Event{}, fmt.Errorf("delete event id=%d: %w", id, err)
 	}
 
-	fmt.Printf("event with id=%d been deleted", id)
+	fmt.Printf("event with id=%d been deleted\n", id)
 
-	return deletedEvent, err
+	return deletedEvent, nil
 }
 
-func GetEventCode(id int) (string, error) {
-	if pool == nil {
-		return "", fmt.Errorf("database is not connected to the server")
-	}
-
+// DeleteExpiredEvents удаляет события, код которых истёк больше чем grace назад
+func DeleteExpiredEvents(ctx context.Context, grace time.Duration) ([]int, error) {
 	query := `
-			SELECT event_code FROM events WHERE event_id=$1
+			DELETE FROM events
+			WHERE expiration_time < now() - $1::interval
+			RETURNING event_id
 			`
 
-	var code string
-	err := pool.QueryRow(context.Background(), query, id).Scan(&code)
-
+	rows, err := pool.Query(ctx, query, grace)
 	if err != nil {
-		return "", fmt.Errorf("%s", err)
-	}
-
-	return code, err
-}
-
-func UpdateEventCode(id int, newCode string) error {
-	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			UPDATE events SET event_code = $2 where event_id=$1
-			`
-
-	_, err := pool.Exec(context.Background(), query, id, newCode)
-
-	if err != nil {
-		return fmt.Errorf("%s", err)
-	}
-
-	fmt.Printf("event id=%d code been changed on %s", id, newCode)
-
-	return err
-}
-
-func GetExpirationTime(id int) (time.Time, error) {
-	if pool == nil {
-		return time.Time{}, fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			SELECT expiration_time FROM events WHERE event_id=$1
-			`
-
-	var expirationTime time.Time
-	err := pool.QueryRow(context.Background(), query, id).Scan(&expirationTime)
-
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s", err)
-	}
-
-	return expirationTime, err
-}
-
-func UpdateExpirationTime(id int, newExpirationTime time.Time) error {
-	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			UPDATE events SET expiration_time = $2 where event_id=$1
-			`
-
-	_, err := pool.Exec(context.Background(), query, id, newExpirationTime)
-
-	if err != nil {
-		return fmt.Errorf("%s", err)
-	}
-
-	fmt.Printf("event id=%d expiration time been changed on %s", id, newExpirationTime)
-
-	return err
-}
-
-func GetNotedStudents(id int) ([]utils.Student, error) {
-	if pool == nil {
-		return nil, fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			SELECT noted_students FROM events WHERE event_id=$1
-			`
-
-	var rawJSON []byte
-	err := pool.QueryRow(context.Background(), query, id).Scan(&rawJSON)
-
-	if err != nil {
-		return nil, fmt.Errorf("%s", err)
-	}
-
-	var students []utils.Student
-
-	if err = json.Unmarshal(rawJSON, &students); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal json: %s", err)
-	}
-
-	return students, err
-}
-
-func UpdateNotedStudents(id int, students []utils.Student) error {
-	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
-	}
-
-	jsonData, err := json.Marshal(students)
-
-	if err != nil {
-		return fmt.Errorf("failed to marshal students to json: %s", err)
-	}
-
-	query := `
-			UPDATE events SET noted_students=$2 WHERE event_id=$1
-			`
-
-	_, err = pool.Exec(context.Background(), query, id, jsonData)
-
-	if err != nil {
-		return fmt.Errorf("%s", err)
-	}
-
-	fmt.Printf("noted students been updated")
-
-	return err
-}
-
-func GetExpiredEventIds() ([]int, error) {
-	if pool == nil {
-		return nil, fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			SELECT event_id FROM events where CURRENT_TIME > expiration_time
-			`
-
-	rows, err := pool.Query(context.Background(), query)
-	if err != nil {
-		return nil, fmt.Errorf("%s", err)
+		return nil, fmt.Errorf("delete expired events: %w", err)
 	}
 	defer rows.Close()
 
@@ -251,92 +162,80 @@ func GetExpiredEventIds() ([]int, error) {
 	for rows.Next() {
 		var id int
 		if err = rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan event_id: %s", err)
+			return nil, fmt.Errorf("scan event_id: %w", err)
 		}
 		ids = append(ids, id)
 	}
-
-	return ids, err
-}
-
-func GetEventDataById(id int) (utils.EventData, error) {
-	if pool == nil {
-		return utils.EventData{}, fmt.Errorf("database is not connected to the server")
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("delete expired events: %w", err)
 	}
 
+	return ids, nil
+}
+
+// RotateEventCode меняет код активного события и продлевает срок.
+// Возвращает ErrNotFound, если код неизвестен или ротация выключена
+func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration) (string, []utils.Student, error) {
 	query := `
-			SELECT event_name, event_owner, event_info FROM events where event_id=$1
+			UPDATE events
+			SET event_code = $2, expiration_time = now() + $3::interval
+			WHERE event_code = $1 AND update_need
+			RETURNING event_id, noted_students
 			`
 
-	var eventData utils.EventData
-	err := pool.QueryRow(context.Background(), query, id).Scan(&eventData.EventName, &eventData.EventOwner, &eventData.EventInfo)
-	if err != nil {
-		return utils.EventData{}, fmt.Errorf("%s", err)
+	var err error
+	for i := 0; i < codeGenAttempts; i++ {
+		newCode := code.GenerateNewCode()
+
+		var id int
+		var students []utils.Student
+		err = pool.QueryRow(ctx, query, oldCode, newCode, ttl).Scan(&id, &students)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil, ErrNotFound
+		}
+		if err == nil {
+			fmt.Printf("event id=%d code been changed\n", id)
+			return newCode, students, nil
+		}
+		if !isUniqueViolation(err) {
+			break
+		}
+		fmt.Println("regenerating code")
 	}
 
-	return eventData, err
+	return "", nil, fmt.Errorf("rotate event code: %w", err)
 }
 
-func GetEventIdByCode(code string) (int, error) {
-	if pool == nil {
-		return -1, fmt.Errorf("database is not connected to the server")
-	}
-
+// AddNotedStudent атомарно и идемпотентно добавляет студента в noted_students.
+// Возвращает added=false, если студент уже был отмечен
+func AddNotedStudent(ctx context.Context, eventId int, login string) (bool, error) {
 	query := `
-			SELECT event_id FROM events where event_code=$1
+			UPDATE events
+			SET noted_students = noted_students || jsonb_build_array(jsonb_build_object('login', $2::text))
+			WHERE event_id = $1
+			  AND NOT noted_students @> jsonb_build_array(jsonb_build_object('login', $2::text))
 			`
 
-	var id int
-	err := pool.QueryRow(context.Background(), query, code).Scan(&id)
+	tag, err := pool.Exec(ctx, query, eventId, login)
 	if err != nil {
-		return -1, fmt.Errorf("%s", err)
+		return false, fmt.Errorf("add noted student to event id=%d: %w", eventId, err)
 	}
 
-	return id, err
+	return tag.RowsAffected() == 1, nil
 }
 
-// вернет false даже в случае если такого id нет в бд
-func GetUpdateNeedById(id int) (bool, error) {
-	if pool == nil {
-		return false, fmt.Errorf("database is not connected to the server")
-	}
-
-	query := `
-			SELECT update_need FROM events where event_id=$1
-			`
-
-	var updateNeed bool
-	err := pool.QueryRow(context.Background(), query, id).Scan(&updateNeed)
-	if err != nil {
-		return false, fmt.Errorf("%s", err)
-	}
-
-	return updateNeed, err
-}
-
-func UpdateUpdateNeedById(id int, newState bool) error {
-	if pool == nil {
-		return fmt.Errorf("database is not connected to the server")
-	}
-
+func UpdateUpdateNeedById(ctx context.Context, id int, newState bool) error {
 	query := `
 			UPDATE events SET update_need=$2 where event_id=$1
 			`
 
-	_, err := pool.Exec(context.Background(), query, id, newState)
+	tag, err := pool.Exec(ctx, query, id, newState)
 	if err != nil {
-		return fmt.Errorf("%s", err)
+		return fmt.Errorf("update update_need of event id=%d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 
-	return err
-}
-
-func OnCodeExistCheck(code string) (bool, error) {
-	_, err := GetEventIdByCode(code)
-
-	if err != nil {
-		return false, err
-	}
-
-	return true, err
+	return nil
 }
