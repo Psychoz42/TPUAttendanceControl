@@ -124,14 +124,17 @@ func GetEventsByOwner(ctx context.Context, owner string) ([]utils.Event, error) 
 	return events, nil
 }
 
-func DeleteEventById(ctx context.Context, id int) (utils.Event, error) {
+// У DeleteEventById, UpdateUpdateNeedById и RotateEventCode параметр owner ограничивает
+// действие событиями этого владельца. Чужое событие выглядит как ErrNotFound, чтобы нельзя
+// было перебирать id. Пустой owner значит запрос без токена: проверки нет, пока AUTH_REQUIRED выключен
+func DeleteEventById(ctx context.Context, id int, owner string) (utils.Event, error) {
 	query := `
 			DELETE FROM events
-			WHERE event_id = $1
+			WHERE event_id = $1 AND ($2::text = '' OR event_owner = $2)
 			RETURNING ` + eventColumns + `
 			`
 
-	deletedEvent, err := scanEvent(pool.QueryRow(ctx, query, id))
+	deletedEvent, err := scanEvent(pool.QueryRow(ctx, query, id, owner))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return utils.Event{}, ErrNotFound
 	}
@@ -175,11 +178,11 @@ func DeleteExpiredEvents(ctx context.Context, grace time.Duration) ([]int, error
 
 // RotateEventCode меняет код активного события и продлевает срок.
 // Возвращает ErrNotFound, если код неизвестен или ротация выключена
-func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration) (string, []utils.Student, error) {
+func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration, owner string) (string, []utils.Student, error) {
 	query := `
 			UPDATE events
 			SET event_code = $2, expiration_time = now() + $3::interval
-			WHERE event_code = $1 AND update_need
+			WHERE event_code = $1 AND update_need AND ($4::text = '' OR event_owner = $4)
 			RETURNING event_id, noted_students
 			`
 
@@ -189,7 +192,7 @@ func RotateEventCode(ctx context.Context, oldCode string, ttl time.Duration) (st
 
 		var id int
 		var students []utils.Student
-		err = pool.QueryRow(ctx, query, oldCode, newCode, ttl).Scan(&id, &students)
+		err = pool.QueryRow(ctx, query, oldCode, newCode, ttl, owner).Scan(&id, &students)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, ErrNotFound
 		}
@@ -224,12 +227,12 @@ func AddNotedStudent(ctx context.Context, eventId int, login string) (bool, erro
 	return tag.RowsAffected() == 1, nil
 }
 
-func UpdateUpdateNeedById(ctx context.Context, id int, newState bool) error {
+func UpdateUpdateNeedById(ctx context.Context, id int, newState bool, owner string) error {
 	query := `
-			UPDATE events SET update_need=$2 where event_id=$1
+			UPDATE events SET update_need=$2 where event_id=$1 AND ($3::text = '' OR event_owner = $3)
 			`
 
-	tag, err := pool.Exec(ctx, query, id, newState)
+	tag, err := pool.Exec(ctx, query, id, newState, owner)
 	if err != nil {
 		return fmt.Errorf("update update_need of event id=%d: %w", id, err)
 	}

@@ -7,5 +7,5 @@ import (
 )
 
 func SetupAuthRoutes(authGroup fiber.Router) {
-	authGroup.Post("/login", newLimiter(loginLimit), handlers.Login)
+	authGroup.Post("/login", newLimiter(loginIPLimit, ipKey), newLimiter(loginAccountLimit, loginAccountKey), handlers.Login)
 }

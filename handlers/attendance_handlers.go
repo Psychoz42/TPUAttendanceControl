@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"backend/apisim"
+	"backend/auth"
 	"backend/database"
 	"backend/utils"
 	"context"
@@ -34,6 +35,15 @@ func parseEventTime(s string) (time.Time, error) {
 	return time.Parse("15:04", s)
 }
 
+// логин из токена важнее логина из тела запроса. Тело используется,
+// только пока AUTH_REQUIRED выключен и клиент ещё не присылает токен
+func usernameOrBody(c *fiber.Ctx, fromBody string) string {
+	if username := auth.CurrentUsername(c); username != "" {
+		return username
+	}
+	return fromBody
+}
+
 func Scan(c *fiber.Ctx) error {
 	qr := new(struct {
 		QrCode   string `json:"qrCode"`
@@ -44,11 +54,13 @@ func Scan(c *fiber.Ctx) error {
 		return sendError(c, "INVALID_DATA_FORMAT", "Invalid scan data format")
 	}
 
-	if qr.QrCode == "" || qr.Username == "" {
+	username := usernameOrBody(c, qr.Username)
+
+	if qr.QrCode == "" || username == "" {
 		return sendError(c, "INVALID_DATA_FORMAT", "qrCode and username are required")
 	}
 
-	if _, err := apisim.GetFullNameByUsername(qr.Username); err != nil {
+	if _, err := apisim.GetFullNameByUsername(username); err != nil {
 		return sendError(c, "UNKNOWN_USER", "No such student")
 	}
 
@@ -65,7 +77,7 @@ func Scan(c *fiber.Ctx) error {
 	}
 
 	// повторный скан тем же студентом ничего не меняет и тоже считается успешным
-	if _, err = database.AddNotedStudent(ctx, event.Id, qr.Username); err != nil {
+	if _, err = database.AddNotedStudent(ctx, event.Id, username); err != nil {
 		log.Printf("scan: %v", err)
 		return sendError(c, "DB_ERROR", "Failed to note student")
 	}
@@ -91,7 +103,8 @@ func CreateEvent(c *fiber.Ctx) error {
 		return sendError(c, "INVALID_DATA_FORMAT", "Event name must be from 1 to 200 characters")
 	}
 
-	if strings.TrimSpace(eventData.Owner) == "" {
+	owner := usernameOrBody(c, eventData.Owner)
+	if strings.TrimSpace(owner) == "" {
 		return sendError(c, "INVALID_DATA_FORMAT", "Event owner is required")
 	}
 
@@ -103,7 +116,7 @@ func CreateEvent(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	eventId, eventCode, err := database.CreateEvent(ctx, name, eventData.Owner, "", eventTime, codeTTL)
+	eventId, eventCode, err := database.CreateEvent(ctx, name, owner, "", eventTime, codeTTL)
 	if err != nil {
 		log.Printf("createEvent: %v", err)
 		return sendError(c, "DB_ERROR", "Failed to create event")
@@ -131,7 +144,7 @@ func GetOwnersEvents(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	events, err := database.GetEventsByOwner(ctx, owner.Owner)
+	events, err := database.GetEventsByOwner(ctx, usernameOrBody(c, owner.Owner))
 	if err != nil {
 		log.Printf("getOwnerEvents: %v", err)
 		return sendError(c, "DB_ERROR", "Failed to get events")
@@ -157,7 +170,7 @@ func DisableEventUpdating(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	err := database.UpdateUpdateNeedById(ctx, eventId.EventId, false)
+	err := database.UpdateUpdateNeedById(ctx, eventId.EventId, false, auth.CurrentUsername(c))
 	if errors.Is(err, database.ErrNotFound) {
 		return sendError(c, "EVENT_NOT_FOUND", "No such event")
 	}
@@ -185,7 +198,7 @@ func DeleteEvent(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	_, err := database.DeleteEventById(ctx, eventId.EventId)
+	_, err := database.DeleteEventById(ctx, eventId.EventId, auth.CurrentUsername(c))
 	if errors.Is(err, database.ErrNotFound) {
 		return sendError(c, "EVENT_NOT_FOUND", "No such event")
 	}
@@ -213,7 +226,7 @@ func UpdateCode(c *fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 
-	newCode, notedStudents, err := database.RotateEventCode(ctx, eventCode.Code, codeTTL)
+	newCode, notedStudents, err := database.RotateEventCode(ctx, eventCode.Code, codeTTL, auth.CurrentUsername(c))
 	if errors.Is(err, database.ErrNotFound) {
 		return sendError(c, "INVALID_QR", "Code is invalid or event updating is disabled")
 	}

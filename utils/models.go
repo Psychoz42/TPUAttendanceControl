@@ -2,6 +2,11 @@ package utils
 
 import "time"
 
+const (
+	RoleStudent = "student"
+	RoleTeacher = "teacher"
+)
+
 type QrScanResponse struct {
 	Success bool   `json:"success"`
 	Subject string `json:"subject"`
@@ -24,6 +29,8 @@ type LoginResponse struct {
 	FullName string `json:"fullName"`
 	Email    string `json:"email"`
 	Group    string `json:"group"`
+	Role     string `json:"role"`
+	Token    string `json:"token"`
 }
 
 type Student struct {

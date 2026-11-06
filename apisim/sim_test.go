@@ -11,7 +11,8 @@ func TestLoadUsers(t *testing.T) {
 	content := "user1 pass1 user1@tpu.ru Иванов-Иван-Иванович 8К52Т\n" +
 		"\n" +
 		"short line\n" +
-		"  user2   pass2  user2@tpu.ru   Петров-Пётр   8К51  \n"
+		"  user2   pass2  user2@tpu.ru   Петров-Пётр   8К51  \n" +
+		"teacher1 pass3 teacher1@tpu.ru Сидоров-Сидор - teacher\n"
 
 	filename := filepath.Join(t.TempDir(), "users.txt")
 	if err := os.WriteFile(filename, []byte(content), 0o600); err != nil {
@@ -24,8 +25,9 @@ func TestLoadUsers(t *testing.T) {
 	}
 
 	want := []User{
-		{Username: "user1", Password: "pass1", Email: "user1@tpu.ru", FullName: "Иванов Иван Иванович", Group: "8К52Т"},
-		{Username: "user2", Password: "pass2", Email: "user2@tpu.ru", FullName: "Петров Пётр", Group: "8К51"},
+		{Username: "user1", Password: "pass1", Email: "user1@tpu.ru", FullName: "Иванов Иван Иванович", Group: "8К52Т", Role: "student"},
+		{Username: "user2", Password: "pass2", Email: "user2@tpu.ru", FullName: "Петров Пётр", Group: "8К51", Role: "student"},
+		{Username: "teacher1", Password: "pass3", Email: "teacher1@tpu.ru", FullName: "Сидоров Сидор", Group: "-", Role: "teacher"},
 	}
 	if len(users) != len(want) {
 		t.Fatalf("got %d users, want %d: %+v", len(users), len(want), users)
@@ -34,6 +36,17 @@ func TestLoadUsers(t *testing.T) {
 		if users[i] != want[i] {
 			t.Errorf("user %d = %+v, want %+v", i, users[i], want[i])
 		}
+	}
+}
+
+func TestLoadUsersUnknownRole(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "users.txt")
+	if err := os.WriteFile(filename, []byte("user1 pass1 user1@tpu.ru Иванов 8К52Т admin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadUsers(filename); err == nil {
+		t.Fatal("expected error for unknown role")
 	}
 }
 

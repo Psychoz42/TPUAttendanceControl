@@ -2,7 +2,9 @@ package main
 
 import (
 	"backend/apisim"
+	"backend/auth"
 	"backend/database"
+	"backend/utils"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,9 +21,13 @@ import (
 // Интеграционные тесты. Нужна БД с накатанными миграциями, например из docker compose:
 // TEST_DATABASE_URL=postgresql://postgres:2367@localhost:5431/postgres go test ./...
 
-const testOwner = "integration-test-owner"
+const (
+	testOwner      = "integration-test-owner"
+	testOtherOwner = "integration-test-other-owner"
+	testJWTSecret  = "integration-test-secret-integration-test-secret"
+)
 
-func setupTestApp(t *testing.T) *fiber.App {
+func setupTestAppWithAuth(t *testing.T, authRequired bool) *fiber.App {
 	t.Helper()
 
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -35,6 +41,10 @@ func setupTestApp(t *testing.T) *fiber.App {
 		}
 	}
 
+	if err := auth.Init(testJWTSecret, authRequired); err != nil {
+		t.Fatal(err)
+	}
+
 	apisim.Users = nil
 	for i := 1; i <= 50; i++ {
 		apisim.Users = append(apisim.Users, apisim.User{
@@ -43,17 +53,45 @@ func setupTestApp(t *testing.T) *fiber.App {
 			Email:    fmt.Sprintf("student%d@tpu.ru", i),
 			FullName: fmt.Sprintf("Студент Номер %d", i),
 			Group:    "test",
+			Role:     utils.RoleStudent,
+		})
+	}
+	for _, username := range []string{testOwner, testOtherOwner} {
+		apisim.Users = append(apisim.Users, apisim.User{
+			Username: username,
+			Password: "pass",
+			Email:    username + "@tpu.ru",
+			FullName: username,
+			Group:    "-",
+			Role:     utils.RoleTeacher,
 		})
 	}
 
 	t.Cleanup(func() {
-		database.GetPool().Exec(context.Background(), "DELETE FROM events WHERE event_owner = $1", testOwner)
+		database.GetPool().Exec(context.Background(), "DELETE FROM events WHERE event_owner = ANY($1)", []string{testOwner, testOtherOwner})
 	})
 
 	return newApp()
 }
 
-func post(t *testing.T, app *fiber.App, path string, body any) (int, map[string]any) {
+func setupTestApp(t *testing.T) *fiber.App {
+	t.Helper()
+	return setupTestAppWithAuth(t, false)
+}
+
+// получает токен через настоящий login, как это сделает клиент
+func loginToken(t *testing.T, app *fiber.App, email string) string {
+	t.Helper()
+
+	_, result := post(t, app, "/api/v1/auth/login", map[string]string{"email": email, "password": "pass"})
+	token, _ := result["token"].(string)
+	if token == "" {
+		t.Fatalf("login %s: no token in response %v", email, result)
+	}
+	return token
+}
+
+func postAs(t *testing.T, app *fiber.App, token string, path string, body any) (int, map[string]any) {
 	t.Helper()
 
 	data, err := json.Marshal(body)
@@ -63,6 +101,9 @@ func post(t *testing.T, app *fiber.App, path string, body any) (int, map[string]
 
 	req := httptest.NewRequest("POST", path, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -76,6 +117,11 @@ func post(t *testing.T, app *fiber.App, path string, body any) (int, map[string]
 	}
 
 	return resp.StatusCode, result
+}
+
+func post(t *testing.T, app *fiber.App, path string, body any) (int, map[string]any) {
+	t.Helper()
+	return postAs(t, app, "", path, body)
 }
 
 func expectError(t *testing.T, result map[string]any, code string) {
@@ -278,6 +324,219 @@ func TestLoginLimiter(t *testing.T) {
 		t.Fatalf("11th login: status %d, want 429", status)
 	}
 	expectError(t, result, "TOO_MANY_REQUESTS")
+}
+
+func TestLoginLimiterPerAccount(t *testing.T) {
+	app := setupTestApp(t)
+
+	// соседи по NAT: у одного кончились попытки, другой всё ещё может войти
+	body := map[string]string{"email": "student1@tpu.ru", "password": "wrong"}
+	for i := 0; i < 11; i++ {
+		post(t, app, "/api/v1/auth/login", body)
+	}
+
+	status, result := post(t, app, "/api/v1/auth/login", map[string]string{"email": "student2@tpu.ru", "password": "pass"})
+	if status != 200 || result["username"] != "student2" {
+		t.Fatalf("login of other account: status %d, response %v", status, result)
+	}
+}
+
+func TestLoginReturnsTokenAndRole(t *testing.T) {
+	app := setupTestApp(t)
+
+	_, result := post(t, app, "/api/v1/auth/login", map[string]string{"email": testOwner + "@tpu.ru", "password": "pass"})
+	if result["role"] != utils.RoleTeacher || result["token"] == "" || result["token"] == nil {
+		t.Fatalf("unexpected login response: %v", result)
+	}
+
+	_, result = post(t, app, "/api/v1/auth/login", map[string]string{"email": "student1@tpu.ru", "password": "pass"})
+	if result["role"] != utils.RoleStudent {
+		t.Fatalf("unexpected login response: %v", result)
+	}
+}
+
+func TestAuthRequired(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+
+	paths := []string{"scan", "createEvent", "getOwnerEvents", "disableEventUpdating", "deleteEvent", "updateCode"}
+	for _, path := range paths {
+		status, result := post(t, app, "/api/v1/attendance/"+path, map[string]string{})
+		if status != fiber.StatusUnauthorized {
+			t.Fatalf("%s without token: status %d, want 401", path, status)
+		}
+		expectError(t, result, "UNAUTHORIZED")
+
+		status, result = postAs(t, app, "not-a-token", "/api/v1/attendance/"+path, map[string]string{})
+		if status != fiber.StatusUnauthorized {
+			t.Fatalf("%s with bad token: status %d, want 401", path, status)
+		}
+		expectError(t, result, "UNAUTHORIZED")
+	}
+}
+
+func TestRoles(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+	studentToken := loginToken(t, app, "student1@tpu.ru")
+	teacherToken := loginToken(t, app, testOwner+"@tpu.ru")
+
+	for _, path := range []string{"createEvent", "getOwnerEvents", "disableEventUpdating", "deleteEvent", "updateCode"} {
+		status, result := postAs(t, app, studentToken, "/api/v1/attendance/"+path, map[string]string{})
+		if status != fiber.StatusForbidden {
+			t.Fatalf("student on %s: status %d, want 403", path, status)
+		}
+		expectError(t, result, "FORBIDDEN")
+	}
+
+	status, result := postAs(t, app, teacherToken, "/api/v1/attendance/scan", map[string]string{"qrCode": "x"})
+	if status != fiber.StatusForbidden {
+		t.Fatalf("teacher on scan: status %d, want 403", status)
+	}
+	expectError(t, result, "FORBIDDEN")
+}
+
+func TestIdentityComesFromToken(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+	studentToken := loginToken(t, app, "student1@tpu.ru")
+	teacherToken := loginToken(t, app, testOwner+"@tpu.ru")
+
+	// владелец из тела игнорируется
+	_, result := postAs(t, app, teacherToken, "/api/v1/attendance/createEvent", map[string]string{
+		"event_name": "Тестовая пара", "event_owner": testOtherOwner, "event_time": "10:30",
+	})
+	eventId, ok := result["event_id"].(float64)
+	eventCode, _ := result["code"].(string)
+	if !ok {
+		t.Fatalf("unexpected createEvent response: %v", result)
+	}
+
+	event, err := database.GetEventById(context.Background(), int(eventId))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Owner != testOwner {
+		t.Fatalf("event owner %q, want %q", event.Owner, testOwner)
+	}
+
+	// логин из тела игнорируется: отмечается владелец токена, поле username необязательно
+	_, result = postAs(t, app, studentToken, "/api/v1/attendance/scan", map[string]string{"qrCode": eventCode, "username": "student2"})
+	if result["success"] != true {
+		t.Fatalf("unexpected scan response: %v", result)
+	}
+	_, result = postAs(t, app, studentToken, "/api/v1/attendance/scan", map[string]string{"qrCode": eventCode})
+	if result["success"] != true {
+		t.Fatalf("unexpected scan response: %v", result)
+	}
+
+	event, err = database.GetEventById(context.Background(), int(eventId))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(event.NotedStudents) != 1 || event.NotedStudents[0].Login != "student1" {
+		t.Fatalf("noted students %v, want only student1", event.NotedStudents)
+	}
+}
+
+func TestOwnerEventsFromToken(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+	ownerToken := loginToken(t, app, testOwner+"@tpu.ru")
+	otherToken := loginToken(t, app, testOtherOwner+"@tpu.ru")
+
+	_, result := postAs(t, app, ownerToken, "/api/v1/attendance/createEvent", map[string]string{"event_name": "x", "event_time": "10:30"})
+	eventId, ok := result["event_id"].(float64)
+	if !ok {
+		t.Fatalf("unexpected createEvent response: %v", result)
+	}
+
+	// чужой токен с owner в теле не должен увидеть событие
+	req := httptest.NewRequest("POST", "/api/v1/attendance/getOwnerEvents", bytes.NewReader([]byte(`{"owner":"`+testOwner+`"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+otherToken)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var events []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e["event_id"] == eventId {
+			t.Fatalf("other teacher sees event %v", e)
+		}
+	}
+}
+
+func TestOtherTeacherCannotTouchEvent(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+	ownerToken := loginToken(t, app, testOwner+"@tpu.ru")
+	otherToken := loginToken(t, app, testOtherOwner+"@tpu.ru")
+
+	_, result := postAs(t, app, ownerToken, "/api/v1/attendance/createEvent", map[string]string{"event_name": "x", "event_time": "10:30"})
+	eventId, ok := result["event_id"].(float64)
+	eventCode, _ := result["code"].(string)
+	if !ok {
+		t.Fatalf("unexpected createEvent response: %v", result)
+	}
+	idBody := map[string]int{"event_id": int(eventId)}
+
+	_, result = postAs(t, app, otherToken, "/api/v1/attendance/deleteEvent", idBody)
+	expectError(t, result, "EVENT_NOT_FOUND")
+
+	_, result = postAs(t, app, otherToken, "/api/v1/attendance/disableEventUpdating", idBody)
+	expectError(t, result, "EVENT_NOT_FOUND")
+
+	// код знает любой студент, но без прав на событие новый код и список он не получит
+	_, result = postAs(t, app, otherToken, "/api/v1/attendance/updateCode", map[string]string{"code": eventCode})
+	expectError(t, result, "INVALID_QR")
+
+	event, err := database.GetEventById(context.Background(), int(eventId))
+	if err != nil {
+		t.Fatalf("event must still exist: %v", err)
+	}
+	if !event.UpdateNeed || event.Code != eventCode {
+		t.Fatalf("event was changed by other teacher: %+v", event)
+	}
+
+	_, result = postAs(t, app, ownerToken, "/api/v1/attendance/updateCode", map[string]string{"code": eventCode})
+	if newCode, _ := result["new_code"].(string); len(newCode) != 16 {
+		t.Fatalf("unexpected updateCode response: %v", result)
+	}
+
+	_, result = postAs(t, app, ownerToken, "/api/v1/attendance/disableEventUpdating", idBody)
+	if result["success"] != true {
+		t.Fatalf("unexpected disableEventUpdating response: %v", result)
+	}
+
+	_, result = postAs(t, app, ownerToken, "/api/v1/attendance/deleteEvent", idBody)
+	if result["success"] != true {
+		t.Fatalf("unexpected deleteEvent response: %v", result)
+	}
+}
+
+func TestScanLimiterPerUser(t *testing.T) {
+	app := setupTestAppWithAuth(t, true)
+	firstToken := loginToken(t, app, "student1@tpu.ru")
+	secondToken := loginToken(t, app, "student2@tpu.ru")
+
+	body := map[string]string{"qrCode": "unknown"}
+	for i := 0; i < 30; i++ {
+		postAs(t, app, firstToken, "/api/v1/attendance/scan", body)
+	}
+
+	status, result := postAs(t, app, firstToken, "/api/v1/attendance/scan", body)
+	if status != fiber.StatusTooManyRequests {
+		t.Fatalf("31st scan: status %d, want 429", status)
+	}
+	expectError(t, result, "TOO_MANY_REQUESTS")
+
+	// другой студент с того же IP лимит не делит
+	status, result = postAs(t, app, secondToken, "/api/v1/attendance/scan", body)
+	if status != 200 {
+		t.Fatalf("scan of other student: status %d, want 200", status)
+	}
+	expectError(t, result, "INVALID_QR")
 }
 
 func TestErrorHandler(t *testing.T) {

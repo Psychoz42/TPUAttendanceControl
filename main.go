@@ -2,6 +2,7 @@ package main
 
 import (
 	"backend/apisim"
+	"backend/auth"
 	"backend/database"
 	"backend/routes"
 	"backend/utils"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -39,7 +41,19 @@ func main() {
 	listenAddr := getenv("LISTEN_ADDR", ":80")
 	usersFile := getenv("USERS_FILE", "users.txt")
 
-	var err error
+	authRequired, err := strconv.ParseBool(getenv("AUTH_REQUIRED", "false"))
+	if err != nil {
+		log.Fatalf("неверное значение AUTH_REQUIRED: %v", err)
+	}
+
+	err = auth.Init(os.Getenv("JWT_SECRET"), authRequired)
+	if err != nil {
+		log.Fatalf("не удалось настроить авторизацию: %v", err)
+	}
+	if !authRequired {
+		log.Println("ВНИМАНИЕ: AUTH_REQUIRED выключен, запросы без токена принимаются без проверки прав")
+	}
+
 	apisim.Users, err = apisim.LoadUsers(usersFile)
 	if err != nil {
 		log.Fatalf("не удалось загрузить пользователей: %v", err)
