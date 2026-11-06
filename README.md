@@ -1,36 +1,124 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Веб-панель преподавателя TPU Attendance Control
 
-## Getting Started
+Фронтенд для системы динамического учёта посещаемости занятий Национального исследовательского Томского политехнического университета (ТПУ).
 
-First, run the development server:
+Проект разработан на **Next.js (App Router, React 19, TypeScript)** с чистым **Tailwind CSS**.
+
+---
+
+## 🎯 Назначение и функциональность
+
+Веб-приложение создано специально для **преподавателей** для демонстрации на большом экране / проекторе аудитории:
+
+- **Авторизация преподавателя** (`/login`) через корпоративную почту `@tpu.ru` и JWT-токены с защитой от входа студентов (студенты используют только мобильное приложение).
+- **Дашборд** (`/dashboard`):
+  - Быстрое создание занятия с расписанием звонков ТПУ (1–7 пары: 08:30, 10:25, 12:45, 14:40, 16:35, 18:30, 20:25) или произвольным временем `HH:MM`.
+  - Просмотр активных событий на сервере.
+  - Локальный архив проведённых пар с сохранением истории отметившихся студентов.
+- **Интерактивный экран занятия / режим проектора** (`/session/[id]`):
+  - Большой высококонтрастный QR-код (строго 16-значный код без посторонних URL-префиксов, как ожидает мобильное приложение).
+  - Автоматическая ротация каждые ~10 секунд через `POST /attendance/updateCode`.
+  - Визуальный таймер обратного отсчёта и прогресс-бар ротации.
+  - Список отметившихся студентов в реальном времени с индикацией вновь прибывших и поиском по фамилии.
+  - Полноэкранный режим демонстрации (F11 / кнопка «На проектор»).
+  - Защита от случайного закрытия вкладки во время занятия (`beforeunload`).
+  - Восстановление сессии при обновлении страницы.
+- **Экспорт ведомостей**:
+  - Выгрузка в **Excel (.xlsx)** с официальной шапкой ТПУ и таблицей студентов.
+  - Выгрузка в **CSV** (с UTF-8 BOM для корректного открытия в Excel).
+  - Печать ведомости (`window.print()`, оптимизированный чистый `@media print` стиль).
+  - Копирование нумерованного списка в буфер обмена.
+
+---
+
+## 🛠 Запуск в разработке (Local Dev)
+
+Требования: Node.js 20+ и запущенный бэкенд ТПУ.
 
 ```bash
+# 1. Установка зависимостей
+npm install
+
+# 2. Настройка адреса бэкенда (при необходимости изменить в .env.local)
+# По умолчанию: NEXT_PUBLIC_API_URL=http://localhost:80/api/v1
+
+# 3. Запуск dev-сервера
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Приложение будет доступно по адресу [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🐳 Запуск через Docker
 
-## Learn More
+В проекте настроен многоэтапный production-билд (`output: 'standalone'`).
 
-To learn more about Next.js, take a look at the following resources:
+### С помощью Docker Compose:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+# Запуск контейнера
+docker compose up -d --build
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# Остановка
+docker compose down
+```
 
-## Deploy on Vercel
+### Сборка и запуск напрямую через Docker:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+# Сборка образа
+docker build -t tpu-attendance-frontend .
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Запуск контейнера на порту 3000
+docker run -d -p 3000:3000 \
+  -e NEXT_PUBLIC_API_URL=http://localhost:80/api/v1 \
+  --name tpu-attendance-frontend \
+  tpu-attendance-frontend
+```
+
+---
+
+## 📁 Структура проекта
+
+```text
+src/
+├── app/
+│   ├── layout.tsx                # Корневой layout, шрифт, AuthProvider
+│   ├── page.tsx                  # Редирект в зависимости от авторизации
+│   ├── globals.css               # Стилизация Tailwind CSS и @media print
+│   ├── login/
+│   │   └── page.tsx              # Страница входа преподавателя
+│   ├── dashboard/
+│   │   └── page.tsx              # Создание пары, активные события, локальный архив
+│   └── session/[id]/
+│       └── page.tsx              # Главный экран трансляции QR и списка студентов
+├── components/
+│   ├── layout/
+│   │   └── Header.tsx            # Навигационная панель с профилем и выходом
+│   ├── qr/
+│   │   ├── QrDisplay.tsx         # Высококонтрастный QR-код с индикатором ротации
+│   │   └── QrTimer.tsx           # Прогресс-бар обратного отсчета 10с
+│   ├── session/
+│   │   ├── AttendanceList.tsx    # Список отметившихся студентов с поиском
+│   │   ├── ExportModal.tsx       # Модальное окно экспорта (Excel, CSV, печать)
+│   │   └── FinishConfirmModal.tsx# Подтверждение завершения занятия
+│   └── dashboard/
+│       ├── CreateEventForm.tsx   # Форма создания пары со звонками ТПУ
+│       └── ArchiveList.tsx       # Архив проведённых пар
+├── context/
+│   └── AuthContext.tsx           # Состояние сессии, логин, логаут, проверка роли
+├── hooks/
+│   └── useAttendanceSession.ts   # Цикл ротации updateCode, таймер 10с, обработка ошибок
+├── lib/
+│   ├── api/
+│   │   ├── client.ts             # Единый клиент с разбором HTTP 200 ошибок бэкенда
+│   │   ├── auth.ts               # login
+│   │   └── attendance.ts         # createEvent, updateCode, disableEventUpdating и др.
+│   ├── export.ts                 # Экспорт в Excel (.xlsx), CSV, печать
+│   └── storage.ts                # Работа с LocalStorage (кэш сессии, архив)
+└── types/
+    ├── api.ts                    # DTO бэкенда Go (snake_case и camelCase)
+    ├── auth.ts                   # Профиль преподавателя и токен
+    └── attendance.ts             # Модели активной и архивной сессий
+```
