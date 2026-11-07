@@ -49,11 +49,13 @@ android {
     }
 
     buildTypes {
+        // String.valueOf делает поле не константой компиляции: иначе Kotlin встраивает адрес
+        // в вызывающий код, и инкрементальная сборка после смены -P может оставить старый адрес
         debug {
-            buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
+            buildConfigField("String", "BASE_URL", "String.valueOf(\"$debugBaseUrl\")")
         }
         release {
-            buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
+            buildConfigField("String", "BASE_URL", "String.valueOf(\"$releaseBaseUrl\")")
             signingConfigs.findByName("release")?.let { signingConfig = it }
             // R8: обфускация и вырезание неиспользуемого кода усложняют реверс-инжиниринг APK
             isMinifyEnabled = true
