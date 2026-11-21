@@ -38,7 +38,7 @@ func getenv(key, def string) string {
 func main() {
 	fmt.Println("Start main.go")
 
-	databaseUrl := getenv("DATABASE_URL", "postgresql://postgres:2367@localhost:5431/postgres")
+	databaseUrl := getenv("DATABASE_URL", "postgresql://postgres:${POSTGRES_PASSWORD:?}@localhost:5431/postgres")
 	listenAddr := getenv("LISTEN_ADDR", ":80")
 	usersFile := getenv("USERS_FILE", "users.txt")
 	// задавать, только если сервер доступен исключительно через прокси, иначе клиент подделает свой IP
