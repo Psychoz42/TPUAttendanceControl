@@ -1,0 +1,3 @@
+ALTER TABLE events ALTER COLUMN event_name SET DEFAULT '';
+ALTER TABLE events ALTER COLUMN event_owner SET DEFAULT '';
+ALTER TABLE events ALTER COLUMN event_info SET DEFAULT '';
