@@ -4,7 +4,10 @@ FROM node:20-alpine AS base
 
 # Step 1: Install dependencies
 FROM base AS deps
-RUN apk add --no-cache libc6-compat
+RUN ALPINE_VER=$(cut -d. -f1,2 /etc/alpine-release) \
+ && echo "https://mirror.yandex.ru/mirrors/alpine/v${ALPINE_VER}/main" > /etc/apk/repositories \
+ && echo "https://mirror.yandex.ru/mirrors/alpine/v${ALPINE_VER}/community" >> /etc/apk/repositories \
+ && apk add --no-cache libc6-compat
 WORKDIR /app
 
 COPY package.json package-lock.json ./
