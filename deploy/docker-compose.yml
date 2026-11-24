@@ -10,6 +10,7 @@ services:
   # единственный контейнер, доступный снаружи: HTTPS и распределение запросов
   caddy:
     image: caddy:2.10-alpine
+    network_mode: host
     restart: unless-stopped
     logging: *logging
     depends_on:
@@ -28,19 +29,25 @@ services:
   frontend:
     build:
       context: ${FRONTEND_PATH:?}
+      network: host
       args:
         NEXT_PUBLIC_API_URL: /api/v1
     restart: unless-stopped
     logging: *logging
+    ports:
+      - "127.0.0.1:3000:3000"
 
   backend:
     build:
       context: ..
+      network: host
     restart: unless-stopped
     logging: *logging
     depends_on:
       migrate:
         condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8080:8080"
     environment:
       AUTH_REQUIRED: "true"
       JWT_SECRET: ${JWT_SECRET:?}
@@ -81,6 +88,12 @@ services:
       retries: 20
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400
 
 volumes:
   caddy_data:
