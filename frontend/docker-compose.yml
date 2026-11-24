@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: attendance_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: postgres
+    ports:
+      - "5431:5432"
+    volumes:
+      - ../backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - attendance_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: attendance_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    environment:
+      DATABASE_URL: postgresql://postgres:devpass@postgres:5432/postgres?sslmode=disable
+      JWT_SECRET: supersecretjwtkeytpuattendancecontrol32bytes
+      AUTH_REQUIRED: "true"
+      LISTEN_ADDR: ":80"
+      USERS_FILE: users.txt
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:80/api/v1
+    container_name: attendance_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:80/api/v1
+
+volumes:
+  attendance_pgdata:
