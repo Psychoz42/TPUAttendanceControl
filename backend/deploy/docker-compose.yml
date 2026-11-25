@@ -60,7 +60,6 @@ services:
   # накатывает новые миграции перед каждым запуском бэкенда и завершается
   migrate:
     image: migrate/migrate:v4.18.3
-    network: host
     logging: *logging
     depends_on:
       postgres:
